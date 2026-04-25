@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Polytopia Market Locator</title>
+<style>
+  :root {
+    --bg:#1b1d24; --panel:#262933; --ink:#e8e8ef; --muted:#8b90a3;
+    --accent:#ffcf4d; --good:#7ed957; --warn:#ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:10px 16px; background:var(--panel); display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:18px; margin:0; }
+  main { display:grid; grid-template-columns: 260px 1fr; height: calc(100vh - 54px); }
+  aside { background:var(--panel); padding:12px; overflow-y:auto; border-right:1px solid #0008; }
+  aside h2 { font-size:13px; text-transform:uppercase; color:var(--muted); margin:16px 0 6px; letter-spacing:0.06em; }
+  aside h2:first-child { margin-top:0; }
+  .palette { display:grid; grid-template-columns: repeat(2, 1fr); gap:6px; }
+  .palette button { padding:8px 6px; background:#333845; border:2px solid transparent; color:var(--ink); border-radius:6px; cursor:pointer; font-size:12px; text-align:left; }
+  .palette button.active { border-color: var(--accent); background:#3d4050; }
+  .palette button .sw { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+  .row { display:flex; gap:8px; align-items:center; margin:6px 0; }
+  .row label { font-size:12px; color:var(--muted); min-width:56px; }
+  .row input[type=number] { width:64px; background:#1b1d24; color:var(--ink); border:1px solid #444; border-radius:4px; padding:4px; }
+  .row input[type=range] { flex:1; }
+  button.action { padding:8px 10px; background:var(--accent); color:#222; border:0; border-radius:6px; cursor:pointer; font-weight:600; }
+  button.secondary { padding:6px 10px; background:#333845; color:var(--ink); border:1px solid #555; border-radius:6px; cursor:pointer; }
+  #stageWrap { position:relative; overflow:auto; background:#0e0f13; }
+  #stage { position:relative; transform-origin: 0 0; }
+  #bgimg { display:block; max-width:none; user-select:none; -webkit-user-drag:none; }
+  canvas { position:absolute; top:0; left:0; }
+  #labels { pointer-events: none; }
+  .stat { padding:8px 10px; background:#1b1d24; border-radius:6px; font-size:13px; }
+  .stat b { color:var(--accent); font-size:16px; }
+  .legend { font-size:11px; color:var(--muted); line-height:1.5; }
+  .err { color:var(--warn); font-size:12px; white-space:pre-wrap; }
+  details { margin-top:6px; }
+  summary { cursor:pointer; font-size:12px; color:var(--muted); }
+  #loading { position:fixed; inset:0; background:#0b0c10cc; display:none; align-items:center; justify-content:center; z-index:1000; backdrop-filter: blur(2px); }
+  #loading.on { display:flex; }
+  .spinbox { background:var(--panel); border:1px solid #444; border-radius:10px; padding:20px 28px; display:flex; gap:14px; align-items:center; box-shadow:0 8px 32px #000a; }
+  .spinner { width:28px; height:28px; border:3px solid #444; border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinbox .txt { font-size:14px; }
+  .spinbox .sub { font-size:11px; color:var(--muted); margin-top:2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Polytopia Market Locator</h1>
+  <input type="file" id="file" accept="image/*" />
+  <button class="secondary" id="clearImg">No screenshot</button>
+  <div class="stat">Stars/turn: <b id="stars">0</b></div>
+  <div class="stat">Cities: <b id="cityCount" style="color:var(--warn)">0</b></div>
+  <div id="statusMsg" class="stat" style="display:none; background:#3a1e1e; color:var(--warn); border:1px solid var(--warn)"></div>
+  <button class="action" id="runOpt">Find optimal markets</button>
+  <button class="secondary" id="clearAssign">Clear suppliers/markets</button>
+  <button class="secondary" id="clearAll">Clear all</button>
+  <div class="stat" style="display:flex; gap:4px; align-items:center">
+    Zoom
+    <button class="secondary" id="zoomOut" style="padding:2px 8px">−</button>
+    <span id="zoomLabel" style="min-width:40px; text-align:center">100%</span>
+    <button class="secondary" id="zoomIn"  style="padding:2px 8px">+</button>
+    <button class="secondary" id="zoomReset" style="padding:2px 6px; font-size:11px">Fit</button>
+  </div>
+</header>
+<div id="loading"><div class="spinbox"><div class="spinner"></div><div class="txt">Finding optimal markets…</div></div></div>
+<main>
+  <aside>
+    <h2>Grid</h2>
+    <div class="row"><label>Rows</label><input type="number" id="rows" value="11" min="2" max="30"/></div>
+    <div class="row"><label>Cols</label><input type="number" id="cols" value="11" min="2" max="30"/></div>
+    <div class="row"><label>Tile W</label><input type="number" id="tileW" value="80" min="16" max="240"/></div>
+    <div class="row"><label>Tile H</label><input type="number" id="tileH" value="40" min="8"  max="160"/></div>
+    <div class="row"><label>Off X</label><input type="range" id="offX" min="0" max="3000" value="500"/><span id="offXv">500</span></div>
+    <div class="row"><label>Off Y</label><input type="range" id="offY" min="0" max="3000" value="40"/><span id="offYv">40</span></div>
+    <button class="secondary" id="applyGrid">Apply grid</button>
+    <button class="secondary" id="calibrate" style="margin-top:6px; width:100%">Calibrate (2 clicks)</button>
+    <div class="legend" style="margin-top:4px">
+      Click + drag to pan. Ctrl + wheel to zoom.<br/>
+      Calibrate: click center of tile (0,0) — the <b>top</b> tile —
+      then click the tile at <b>top-right edge</b> (row 0, last column).
+    </div>
+
+    <h2>Tool</h2>
+    <div class="legend" style="display:flex; gap:10px">
+      <label><input type="radio" name="tool" value="paint" checked/> Paint tile</label>
+      <label><input type="radio" name="tool" value="territory"/> Assign territory</label>
+    </div>
+
+    <h2>Paint tile type</h2>
+    <div class="palette" id="palette"></div>
+    <div class="legend" style="margin-top:6px">Click a tile to paint. Shift-click to erase to Field.</div>
+
+    <h2>Territory</h2>
+    <div class="legend">
+      Switch to <b>Assign territory</b> above. Click a <b>City</b> tile to select it
+      (highlighted), then click surrounding tiles to assign them to that city.
+      Click an already-assigned tile again to revert it to auto (nearest city).
+    </div>
+    <div class="row" style="margin-top:4px">
+      <span class="legend" id="selectedCityLabel" style="flex:1">No city selected</span>
+      <button class="secondary" id="clearManual" style="padding:4px 8px; font-size:11px">Reset all</button>
+    </div>
+
+    <h2>Optimizer: allow building</h2>
+    <div class="legend" style="display:grid; grid-template-columns:1fr 1fr; gap:2px 8px">
+      <label><input type="checkbox" class="enable" data-enable="windmill" checked/> Windmills</label>
+      <label><input type="checkbox" class="enable" data-enable="forge"    checked/> Forges</label>
+      <label><input type="checkbox" class="enable" data-enable="sawmill"  checked/> Sawmills</label>
+      <label><input type="checkbox" class="enable" data-enable="chop"     checked/> Chop forests</label>
+    </div>
+
+    <h2>Show on map</h2>
+    <div class="legend" style="display:grid; grid-template-columns:1fr 1fr; gap:2px 8px">
+      <label><input type="checkbox" class="toggle" data-show="market"    checked/> Markets</label>
+      <label><input type="checkbox" class="toggle" data-show="windmill"  checked/> Windmills</label>
+      <label><input type="checkbox" class="toggle" data-show="forge"     checked/> Forges</label>
+      <label><input type="checkbox" class="toggle" data-show="sawmill"   checked/> Sawmills</label>
+      <label><input type="checkbox" class="toggle" data-show="farm"      checked/> Farms</label>
+      <label><input type="checkbox" class="toggle" data-show="mine"      checked/> Mines</label>
+      <label><input type="checkbox" class="toggle" data-show="lumberhut" checked/> Lumber huts</label>
+      <label><input type="checkbox" class="toggle" data-show="chopped"   checked/> Chopped forests</label>
+      <label><input type="checkbox" class="toggle" data-show="territory" checked/> City territory</label>
+    </div>
+    <div class="legend" style="margin-top:6px">
+      <span style="color:#ffcf4d">●</span> Market ·
+      <span style="color:#7ed957">●</span> Supplier (W/F/S) ·
+      <span style="color:#b58cff">●</span> Resource<br/>
+      Badge on Markets = stars/turn; on suppliers = level.<br/>
+      <b>One market per city.</b> Paint City tiles to mark city centers;
+      territory is assigned to the nearest city.
+    </div>
+
+    <h2>Validator</h2>
+    <div id="errs" class="err"></div>
+
+    <details>
+      <summary>Rules reference</summary>
+      <div class="legend" style="margin-top:6px">
+        Adjacency = 8 directions.<br/>
+        Windmill lvl = adj Farms (on Crop).<br/>
+        Forge lvl = adj Mines (on Ore).<br/>
+        Sawmill lvl = adj Lumber Huts (on Forest).<br/>
+        Market stars = min(Σ min(adj supplier lvl, 4), 8).<br/>
+        City territory = 5×5 around city (Chebyshev ≤ 2).<br/>
+        <b>Ports do not feed markets</b> in current rules.<br/>
+        <b>Max 1 Market / Forge / Sawmill per city.</b><br/>
+        Territory = explicitly assigned tiles only, capped to city's 5×5.<br/>
+        Painting a City auto-assigns its full 5×5 (first city wins on overlap).<br/>
+        All techs & border growth assumed purchased.
+      </div>
+    </details>
+  </aside>
+  <div id="stageWrap">
+    <div id="stage">
+      <img id="bgimg" alt="" />
+      <canvas id="overlay"></canvas>
+      <canvas id="labels"></canvas>
+    </div>
+  </div>
+</main>
+
+<script>
+// ===== Inlined polytopia.js (rules + optimizer) =====
+const TILE = { FIELD:'field', FOREST:'forest', MOUNTAIN:'mountain',
+  CROP:'crop', ORE:'ore', WATER:'water', CITY:'city', BLOCKED:'blocked', FOG:'fog' };
+// Effective terrain: chopped forests behave as empty Fields for building rules.
+function effType(t) { return (t.chopped && t.type === TILE.FOREST) ? TILE.FIELD : t.type; }
+const BUILD = { NONE:null, FARM:'farm', MINE:'mine', LUMBERHUT:'lumberhut', PORT:'port',
+  WINDMILL:'windmill', FORGE:'forge', SAWMILL:'sawmill', MARKET:'market' };
+// Current Polytopia rules: Windmill/Forge/Sawmill are the only market-feeding
+// suppliers. Ports do NOT contribute stars to markets.
+const SUPPLIER_FEED = { windmill:'farm', forge:'mine', sawmill:'lumberhut' };
+function inBounds(g,r,c){ return r>=0&&c>=0&&r<g.rows&&c<g.cols; }
+function neighbors(g,r,c){
+  const out=[];
+  for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
+    if(!dr&&!dc) continue;
+    const nr=r+dr,nc=c+dc;
+    if(inBounds(g,nr,nc)) out.push(g.tiles[nr][nc]);
+  }
+  return out;
+}
+function makeGrid(rows,cols){
+  const tiles=[];
+  for(let r=0;r<rows;r++){
+    const row=[];
+    for(let c=0;c<cols;c++) row.push({r,c,type:TILE.FIELD,building:null,chopped:false,cityId:0,manualCity:null});
+    tiles.push(row);
+  }
+  return {rows,cols,tiles};
+}
+const UNIQUE_PER_CITY = [BUILD.MARKET, BUILD.WINDMILL, BUILD.FORGE, BUILD.SAWMILL];
+function countsPerCity(g, building){
+  const counts={};
+  for(let r=0;r<g.rows;r++) for(let c=0;c<g.cols;c++){
+    const t=g.tiles[r][c];
+    if(t.building===building && t.cityId) counts[t.cityId]=(counts[t.cityId]||0)+1;
+  }
+  return counts;
+}
+function totalExcessPerCity(g){
+  let excess=0;
+  for(const b of UNIQUE_PER_CITY){
+    const c = countsPerCity(g,b);
+    for(const k in c) if(c[k]>1) excess += c[k]-1;
+  }
+  return excess;
+}
+function validateBoard(g){
+  const errs=[];
+  for(let r=0;r<g.rows;r++) for(let c=0;c<g.cols;c++){
+    const t=g.tiles[r][c], b=t.building;
+    if(t.type===TILE.FOG && b) errs.push(`Building at ${r},${c} is inside fog of war`);
+    if(!b) continue;
+    if(!t.cityId && t.type!==TILE.CITY) errs.push(`${b} at ${r},${c} is outside any city's territory`);
+    if(b===BUILD.FARM && t.type!==TILE.CROP) errs.push(`Farm at ${r},${c} not on Crop`);
+    if(b===BUILD.MINE && t.type!==TILE.ORE) errs.push(`Mine at ${r},${c} not on Ore`);
+    if(b===BUILD.LUMBERHUT && (t.type!==TILE.FOREST || t.chopped)) errs.push(`Lumber Hut at ${r},${c} not on (unchopped) Forest`);
+    if(b===BUILD.PORT){
+      if(t.type!==TILE.WATER) errs.push(`Port at ${r},${c} not on Water`);
+      else if(!neighbors(g,r,c).some(n=>n.type!==TILE.WATER && n.type!==TILE.FOG)) errs.push(`Port at ${r},${c} has no adjacent land`);
+    }
+    if([BUILD.WINDMILL,BUILD.FORGE,BUILD.SAWMILL,BUILD.MARKET].includes(b) && effType(t)!==TILE.FIELD)
+      errs.push(`${b} at ${r},${c} must be on empty Field`);
+  }
+  for(const b of UNIQUE_PER_CITY){
+    const c = countsPerCity(g,b);
+    for(const k in c) if(c[k]>1)
+      errs.push(`City ${k} has ${c[k]} ${b}s (max 1 per city)`);
+  }
+  return errs;
+}
+function supplierLevel(g,r,c,st){
+  const feed=SUPPLIER_FEED[st]; let n=0;
+  for(const nb of neighbors(g,r,c)) if(nb.building===feed) n++;
+  return n;
+}
+const MARKET_MAX = 8;
+function marketStars(g,r,c){
+  let s=0;
+  for(const nb of neighbors(g,r,c)){
+    const b=nb.building;
+    if(b===BUILD.WINDMILL||b===BUILD.FORGE||b===BUILD.SAWMILL)
+      s += Math.min(supplierLevel(g,nb.r,nb.c,b),4);
+  }
+  return Math.min(s, MARKET_MAX);
+}
+function totalStarsPerTurn(g){
+  let s=0;
+  for(let r=0;r<g.rows;r++) for(let c=0;c<g.cols;c++)
+    if(g.tiles[r][c].building===BUILD.MARKET) s += marketStars(g,r,c);
+  return s;
+}
+const BASE_ROLES=[BUILD.NONE,BUILD.WINDMILL,BUILD.FORGE,BUILD.SAWMILL,BUILD.MARKET];
+function prefillResources(g){
+  for(let r=0;r<g.rows;r++) for(let c=0;c<g.cols;c++){
+    const t=g.tiles[r][c]; if(t.building) continue;
+    if(t.type===TILE.FOG) continue;
+    if(!t.cityId) continue;
+    if(t.type===TILE.CROP) t.building=BUILD.FARM;
+    else if(t.type===TILE.ORE) t.building=BUILD.MINE;
+    else if(t.type===TILE.FOREST && !t.chopped) t.building=BUILD.LUMBERHUT;
+    else if(t.type===TILE.WATER && neighbors(g,r,c).some(n=>n.type!==TILE.WATER && n.type!==TILE.BLOCKED && n.type!==TILE.FOG))
+      t.building=BUILD.PORT;
+  }
+}
+function buildablePool(g){
+  const out=[];
+  for(let r=0;r<g.rows;r++) for(let c=0;c<g.cols;c++){
+    const t=g.tiles[r][c];
+    if(effType(t)===TILE.FIELD && t.cityId) out.push(t);
+  }
+  return out;
+}
+function cloneGrid(g){
+  const ng={rows:g.rows,cols:g.cols,tiles:[]};
+  for(let r=0;r<g.rows;r++){
+    const row=[];
+    for(let c=0;c<g.cols;c++){
+      const t=g.tiles[r][c];
+      row.push({r:t.r,c:t.c,type:t.type,building:t.building,chopped:!!t.chopped,cityId:t.cityId||0,manualCity:t.manualCity||null});
+    }
+    ng.tiles.push(row);
+  }
+  return ng;
+}
+// Optimizer config: which supplier types / chopping are allowed.
+const optConfig = { windmill:true, forge:true, sawmill:true, chop:true };
+
+// Moves the hill-climb may try at a given tile. For forests we also consider
+// chopping (converting to an empty field, which frees the tile for any role).
+function movesFor(t){
+  const suppliers = [];
+  if (optConfig.windmill) suppliers.push(BUILD.WINDMILL);
+  if (optConfig.forge)    suppliers.push(BUILD.FORGE);
+  if (optConfig.sawmill)  suppliers.push(BUILD.SAWMILL);
+  const fieldRoles = [BUILD.NONE, ...suppliers, BUILD.MARKET];
+
+  if (t.type === TILE.FOREST) {
+    const moves = [{chopped:false, building:BUILD.LUMBERHUT}];
+    if (optConfig.chop) for (const b of fieldRoles) moves.push({chopped:true, building:b});
+    return moves;
+  }
+  return fieldRoles.map(b => ({chopped:false, building:b}));
+}
+
+// Assign a cityId to every tile. City-typed tiles get unique ids; every other
+// tile is assigned the id of its nearest city by Chebyshev (8-dir) distance.
+// Fog tiles remain city-less (id=0). If no city is painted, the whole map is
+// treated as one implicit city — so the "one market per city" rule still holds.
+function assignCities(g){
+  const cities = [];
+  const cityByKey = {};
+  let next = 1;
+  for (let r=0;r<g.rows;r++) for (let c=0;c<g.cols;c++) {
+    const t = g.tiles[r][c];
+    if (t.type === TILE.CITY) {
+      t.cityId = next;
+      const ci = {r,c,id:next};
+      cities.push(ci); cityByKey[r+','+c] = ci;
+      next++;
+    } else t.cityId = 0;
+  }
+  // No cities painted → no territory anywhere. Previously this fell back to
+  // "treat the whole map as one city", which silently allowed buildings to land
+  // on any tile. Be strict: require the user to paint at least one City tile.
+  if (cities.length === 0) return 0;
+  // Territory is ONLY tiles that are explicitly assigned via manualCity, AND
+  // within the city's 5×5 (Chebyshev ≤ 2). Unassigned tiles — even within the
+  // 5×5 of a city — are NOT territory and cannot host buildings. City-paint
+  // auto-fills the full 5×5 with manualCity so the common case still works.
+  const CITY_RADIUS = 2;
+  for (let r=0;r<g.rows;r++) for (let c=0;c<g.cols;c++) {
+    const t = g.tiles[r][c];
+    if (t.type === TILE.CITY || t.type === TILE.FOG) continue;
+    if (t.manualCity && cityByKey[t.manualCity]) {
+      const ci = cityByKey[t.manualCity];
+      const d = Math.max(Math.abs(r-ci.r), Math.abs(c-ci.c));
+      if (d <= CITY_RADIUS) t.cityId = ci.id;
+    }
+  }
+  return cities.length;
+}
+
+// Count markets per city. Returns max over cities; values >1 are violations.
+function maxMarketsPerCity(g){
+  const counts = {};
+  for (let r=0;r<g.rows;r++) for (let c=0;c<g.cols;c++) {
+    const t = g.tiles[r][c];
+    if (t.building === BUILD.MARKET && t.cityId) {
+      counts[t.cityId] = (counts[t.cityId]||0) + 1;
+    }
+  }
+  let mx = 0;
+  for (const k in counts) if (counts[k] > mx) mx = counts[k];
+  return mx;
+}
+
+// Objective for the hill climb: stars/turn minus a large penalty for violating
+// the one-market-per-city rule. Returned to hill climb only; marketStars /
+// totalStarsPerTurn remain pure stars functions.
+function objectiveScore(g){
+  return totalStarsPerTurn(g) - 10000 * totalExcessPerCity(g);
+}
+function applyMove(t,m){ t.chopped=m.chopped; t.building=m.building; }
+function hillClimb(g){
+  // Pool = every tile the optimizer might reassign.
+  const pool=[];
+  for(let r=0;r<g.rows;r++) for(let c=0;c<g.cols;c++){
+    const t=g.tiles[r][c];
+    if((t.type===TILE.FIELD || t.type===TILE.FOREST) && t.cityId) pool.push(t);
+  }
+  let improved=true, best=objectiveScore(g), iter=0;
+  while(improved && iter<400){
+    improved=false; iter++;
+    for(const t of pool){
+      const origB=t.building, origC=!!t.chopped;
+      let bestM={chopped:origC, building:origB}, bestScore=best;
+      for(const m of movesFor(t)){
+        applyMove(t,m);
+        const s=objectiveScore(g);
+        // Priority: (1) don't chop unnecessarily, (2) within same chop state,
+        // prefer empty to a wasted supplier placement.
+        let tieBetter = false;
+        if(s===bestScore){
+          if(bestM.chopped && !m.chopped) tieBetter = true;
+          else if(!!m.chopped === !!bestM.chopped &&
+                  m.building===BUILD.NONE && bestM.building!==BUILD.NONE) tieBetter = true;
+        }
+        if(s>bestScore || tieBetter){ bestScore=s; bestM=m; }
+      }
+      applyMove(t,bestM);
+      if(bestM.building!==origB || bestM.chopped!==origC) improved=true;
+      best=bestScore;
+    }
+    // Pair-swap pass: exchanges roles between two pool tiles if the swap
+    // strictly improves the objective. Helps escape local optima where two
+    // buildings block each other's ideal slots.
+    for(let i=0;i<pool.length;i++){
+      for(let j=i+1;j<pool.length;j++){
+        const a=pool[i], b=pool[j];
+        const aB=a.building, aC=!!a.chopped, bB=b.building, bC=!!b.chopped;
+        const aMoves=movesFor(a), bMoves=movesFor(b);
+        const aCan=aMoves.some(m=>m.building===bB && m.chopped===bC);
+        const bCan=bMoves.some(m=>m.building===aB && m.chopped===aC);
+        if(!aCan||!bCan) continue;
+        applyMove(a,{building:bB,chopped:bC});
+        applyMove(b,{building:aB,chopped:aC});
+        const s=objectiveScore(g);
+        if(s>best){ best=s; improved=true; }
+        else {
+          applyMove(a,{building:aB,chopped:aC});
+          applyMove(b,{building:bB,chopped:bC});
+        }
+      }
+    }
+  }
+  return totalStarsPerTurn(g);
+}
+function optimize(gIn){
+  const g=cloneGrid(gIn);
+  // Reset any prior supplier/market/chop decisions; keep user-painted terrain.
+  for(let r=0;r<g.rows;r++) for(let c=0;c<g.cols;c++){
+    const t=g.tiles[r][c];
+    if([BUILD.WINDMILL,BUILD.FORGE,BUILD.SAWMILL,BUILD.MARKET].includes(t.building)) t.building=null;
+    if(t.type===TILE.FOREST){ t.chopped=false; t.building=null; }
+  }
+  assignCities(g);
+  // Strip any remaining buildings outside a city's territory — you can't build there.
+  for(let r=0;r<g.rows;r++) for(let c=0;c<g.cols;c++){
+    const t=g.tiles[r][c];
+    if(!t.cityId && t.type!==TILE.CITY) t.building=null;
+  }
+  prefillResources(g);
+  let bestGrid=null, bestScore=-1;
+
+  // Seed 1: every buildable tile starts as a market.
+  const g1=cloneGrid(g);
+  for(const t of buildablePool(g1)) t.building=BUILD.MARKET;
+  const s1=hillClimb(g1); if(s1>bestScore){bestScore=s1;bestGrid=g1;}
+
+  // Seed 2: each tile takes the enabled supplier with the most neighboring resources.
+  const g2=cloneGrid(g);
+  for(const t of buildablePool(g2)){
+    const sc={};
+    if (optConfig.windmill) sc.windmill = supplierLevel(g2,t.r,t.c,'windmill');
+    if (optConfig.forge)    sc.forge    = supplierLevel(g2,t.r,t.c,'forge');
+    if (optConfig.sawmill)  sc.sawmill  = supplierLevel(g2,t.r,t.c,'sawmill');
+    let bk=null,bv=0;
+    for(const k of Object.keys(sc)) if(sc[k]>bv){bv=sc[k];bk=k;}
+    t.building=bk||BUILD.MARKET;
+  }
+  const s2=hillClimb(g2); if(s2>bestScore){bestScore=s2;bestGrid=g2;}
+
+  // Seed 2b: for every candidate market position, build the best legal
+  // 1-of-each supplier configuration *around* it, then hill climb.
+  const mkPool = buildablePool(g);
+  for(const mkTile of mkPool){
+    const g2b = cloneGrid(g);
+    const mk = g2b.tiles[mkTile.r][mkTile.c];
+    mk.building = BUILD.MARKET;
+    const candTypes = [];
+    if(optConfig.windmill) candTypes.push('windmill');
+    if(optConfig.forge)    candTypes.push('forge');
+    if(optConfig.sawmill)  candTypes.push('sawmill');
+    for(const st of candTypes){
+      let best={lvl:0, tile:null};
+      for(const nb of neighbors(g2b, mk.r, mk.c)){
+        if(!nb.cityId) continue;
+        if(nb.type!==TILE.FIELD && !(nb.type===TILE.FOREST && nb.chopped)) continue;
+        if(nb.building) continue;
+        const lvl = supplierLevel(g2b, nb.r, nb.c, st);
+        if(lvl>best.lvl){ best={lvl, tile:nb}; }
+      }
+      if(best.tile){
+        best.tile.building = { windmill:BUILD.WINDMILL, forge:BUILD.FORGE, sawmill:BUILD.SAWMILL }[st];
+      }
+    }
+    const s2b=hillClimb(g2b);
+    if(s2b>bestScore){ bestScore=s2b; bestGrid=g2b; }
+  }
+
+  // Seed 3: random restarts — sometimes escapes local optima the seeded starts hit.
+  const RANDOM_ROLES=[BUILD.MARKET];
+  if(optConfig.windmill) RANDOM_ROLES.push(BUILD.WINDMILL);
+  if(optConfig.forge)    RANDOM_ROLES.push(BUILD.FORGE);
+  if(optConfig.sawmill)  RANDOM_ROLES.push(BUILD.SAWMILL);
+  for(let trial=0;trial<80;trial++){
+    const g3=cloneGrid(g);
+    for(const t of buildablePool(g3)) t.building=RANDOM_ROLES[Math.floor(Math.random()*RANDOM_ROLES.length)];
+    // Randomize chop decisions on forests too
+    for(let r=0;r<g3.rows;r++) for(let c=0;c<g3.cols;c++){
+      const t=g3.tiles[r][c];
+      if(t.type===TILE.FOREST && Math.random()<0.3){ t.chopped=true; t.building=null; }
+    }
+    const s3=hillClimb(g3); if(s3>bestScore){bestScore=s3;bestGrid=g3;}
+  }
+  return {grid:bestGrid, stars:bestScore};
+}
+const P = { TILE, BUILD, makeGrid, neighbors, validateBoard,
+  supplierLevel, marketStars, totalStarsPerTurn, prefillResources, optimize, cloneGrid };
+
+// ---- State (isometric grid: tiles render as diamonds)
+let grid = P.makeGrid(11, 11);
+let tileW = 80, tileH = 40;     // diamond width/height in canvas (pre-zoom) px
+let offX = 500, offY = 40;       // where tile (0,0)'s CENTER sits (canvas px)
+let paintType = P.TILE.FIELD;
+let viewZoom = 1.0;              // whole-stage CSS scale (screenshot + grid together)
+let currentTool = 'paint';       // 'paint' | 'territory'
+let selectedCity = null;         // "r,c" of the city tile currently being assigned
+
+// Iso projection: tile (r,c) center on screen.
+function tileCenter(r, c) {
+  return { x: offX + (c - r) * (tileW/2), y: offY + (c + r) * (tileH/2) };
+}
+// Inverse: screen px -> grid coords. In rotated space (X=c, Y=r) each diamond
+// tile is a unit square centered on integer (X,Y), so the nearest integer —
+// Math.round, not Math.floor — is the tile under the cursor.
+function screenToTile(px, py) {
+  const dx = px - offX, dy = py - offY;
+  const a = dx / (tileW/2);   // = c - r
+  const b = dy / (tileH/2);   // = c + r
+  const c = (a + b) / 2;      // fractional column
+  const r = (b - a) / 2;      // fractional row
+  return { r: Math.round(r), c: Math.round(c) };
+}
+
+// ---- Palette
+const PALETTE = [
+  { key:'field',    label:'Field',    color:'#6aa84f' },
+  { key:'crop',     label:'Crop',     color:'#f1c232' },
+  { key:'forest',   label:'Forest',   color:'#274e13' },
+  { key:'mountain', label:'Mountain', color:'#7f7f7f' },
+  { key:'ore',      label:'Ore',      color:'#a87b3f' },
+  { key:'water',    label:'Water',    color:'#3d85c6' },
+  { key:'city',     label:'City',     color:'#cc0000' },
+  { key:'blocked',  label:'Ruin/Other', color:'#444' },
+  // Building paints: set appropriate terrain + building in one click.
+  { key:'b_farm',      label:'Farm',      color:'#ff8ac4', building:'farm',      terrain:'crop'   },
+  { key:'b_mine',      label:'Mine',      color:'#8b5a2b', building:'mine',      terrain:'ore'    },
+  { key:'b_lumberhut', label:'Lumber Hut',color:'#d2691e', building:'lumberhut', terrain:'forest' },
+  { key:'b_windmill',  label:'Windmill',  color:'#7ed957', building:'windmill',  terrain:'field'  },
+  { key:'b_forge',     label:'Forge',     color:'#e67e22', building:'forge',     terrain:'field'  },
+  { key:'b_sawmill',   label:'Sawmill',   color:'#9b59b6', building:'sawmill',   terrain:'field'  },
+  { key:'b_market',    label:'Market',    color:'#ffcf4d', building:'market',    terrain:'field'  }
+];
+// Display toggles
+const showFlags = { market:true, windmill:true, forge:true, sawmill:true,
+                    farm:true, mine:true, lumberhut:true,
+                    chopped:true, territory:true };
+function wireToggles(){
+  document.querySelectorAll('.toggle').forEach(cb => {
+    cb.addEventListener('change', () => { showFlags[cb.dataset.show] = cb.checked; draw(); });
+  });
+  document.querySelectorAll('.enable').forEach(cb => {
+    cb.addEventListener('change', () => { optConfig[cb.dataset.enable] = cb.checked; });
+  });
+}
+// Color palette for city territories (cycled by cityId).
+const CITY_TINTS = ['#ff6b6b', '#4ecdc4', '#ffe066', '#b5ead7', '#c7ceea', '#ffb4a2', '#a29bfe', '#fdcb6e'];
+function tintForCity(id) { return id ? CITY_TINTS[(id-1) % CITY_TINTS.length] : null; }
+
+const paletteEl = document.getElementById('palette');
+PALETTE.forEach(p => {
+  const b = document.createElement('button');
+  b.innerHTML = `<span class="sw" style="background:${p.color}"></span>${p.label}`;
+  b.onclick = () => {
+    paintType = p.key;
+    [...paletteEl.children].forEach(c => c.classList.remove('active'));
+    b.classList.add('active');
+  };
+  if (p.key === 'field') b.classList.add('active');
+  paletteEl.appendChild(b);
+});
+
+// ---- Canvas / DOM
+const bgImg = document.getElementById('bgimg');
+const overlay = document.getElementById('overlay');
+const labels = document.getElementById('labels');
+const stage = document.getElementById('stage');
+
+function resizeStage() {
+  // Iso footprint. Leftmost tile = (rows-1, 0). Rightmost = (0, cols-1).
+  const minX = offX + (0 - (grid.rows-1)) * (tileW/2) - tileW/2;
+  const maxX = offX + ((grid.cols-1) - 0) * (tileW/2) + tileW/2;
+  const minY = offY - tileH/2;
+  const maxY = offY + ((grid.cols-1) + (grid.rows-1)) * (tileH/2) + tileH/2;
+  const w = Math.max((bgImg.naturalWidth||0), Math.ceil(Math.max(maxX, 0) + 20));
+  const h = Math.max((bgImg.naturalHeight||0), Math.ceil(Math.max(maxY, 0) + 20));
+  stage.style.width = w + 'px';
+  stage.style.height = h + 'px';
+  overlay.width = w; overlay.height = h;
+  labels.width = w;  labels.height = h;
+}
+
+function diamondPath(ctx, cx, cy) {
+  ctx.beginPath();
+  ctx.moveTo(cx,            cy - tileH/2);
+  ctx.lineTo(cx + tileW/2,  cy);
+  ctx.lineTo(cx,            cy + tileH/2);
+  ctx.lineTo(cx - tileW/2,  cy);
+  ctx.closePath();
+}
+
+function draw() {
+  resizeStage();
+  const ctx = overlay.getContext('2d');
+  const lctx = labels.getContext('2d');
+  ctx.clearRect(0,0,overlay.width,overlay.height);
+  lctx.clearRect(0,0,labels.width,labels.height);
+  // Recompute city territory assignment so the "one market per city" rule and
+  // territory tints reflect the current map (cheap; runs only on redraw).
+  assignCities(grid);
+  // Enforce the territory invariant everywhere: any tile outside every city's
+  // 5×5 cannot host a building. Strip stale buildings (from earlier optimizer
+  // runs, relocated cities, or paint actions pre-dating a city change).
+  for (let r=0; r<grid.rows; r++) for (let c=0; c<grid.cols; c++) {
+    const t = grid.tiles[r][c];
+    if (!t.cityId && t.type !== P.TILE.CITY && t.building) {
+      t.building = null; t.chopped = false;
+    }
+  }
+
+  // Draw tiles back-to-front so farther diamonds don't overlap nearer ones.
+  for (let s = 0; s <= grid.rows + grid.cols - 2; s++) {
+    for (let r = 0; r < grid.rows; r++) {
+      const c = s - r;
+      if (c < 0 || c >= grid.cols) continue;
+      const t = grid.tiles[r][c];
+      const { x: cx, y: cy } = tileCenter(r, c);
+      const p = PALETTE.find(p => p.key === t.type && !p.building) || PALETTE[0];
+
+      // Diamond fill (translucent so screenshot shows through)
+      diamondPath(ctx, cx, cy);
+      ctx.fillStyle = hexWithAlpha(p.color, 0.32);
+      ctx.fill();
+      // City-territory outline (on top of fill, under buildings)
+      if (showFlags.territory && t.cityId) {
+        const tint = tintForCity(t.cityId);
+        if (tint) {
+          diamondPath(ctx, cx, cy);
+          ctx.strokeStyle = tint;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      }
+      ctx.strokeStyle = '#ffffff55';
+      ctx.lineWidth = 1;
+      diamondPath(ctx, cx, cy);
+      ctx.stroke();
+
+      // Territory-tool highlights
+      if (currentTool === 'territory') {
+        if (t.type === P.TILE.CITY && selectedCity === r+','+c) {
+          diamondPath(ctx, cx, cy);
+          ctx.strokeStyle = '#ffcf4d';
+          ctx.lineWidth = 4;
+          ctx.stroke();
+        }
+        if (t.manualCity) {
+          // Small dot in this city's tint (manual override indicator).
+          const tint = tintForCity(t.cityId) || '#ffcf4d';
+          const dotR = Math.min(tileW,tileH)*0.09;
+          ctx.fillStyle = tint;
+          ctx.strokeStyle = '#111';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(cx - tileW*0.30, cy, dotR, 0, Math.PI*2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+
+
+      // Chopped-forest indicator (only on chopped forests, respecting toggle)
+      if (t.chopped && t.type === 'forest' && showFlags.chopped) {
+        const sz = Math.min(tileW, tileH) * 0.22;
+        lctx.strokeStyle = '#ff6b6b';
+        lctx.lineWidth = 2;
+        lctx.beginPath();
+        lctx.moveTo(cx - sz, cy - sz); lctx.lineTo(cx + sz, cy + sz);
+        lctx.moveTo(cx + sz, cy - sz); lctx.lineTo(cx - sz, cy + sz);
+        lctx.stroke();
+      }
+
+      // Out-of-territory tiles: heavy darken + diagonal hatch so it's
+      // unmistakable which tiles cannot host buildings.
+      if (!t.cityId && t.type !== P.TILE.CITY && t.type !== P.TILE.FOG) {
+        diamondPath(ctx, cx, cy);
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fill();
+        ctx.save();
+        diamondPath(ctx, cx, cy);
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(255,80,80,0.25)';
+        ctx.lineWidth = 1;
+        const step = 10;
+        for (let k = -tileH; k < tileW; k += step) {
+          ctx.beginPath();
+          ctx.moveTo(cx - tileW/2 + k, cy - tileH/2);
+          ctx.lineTo(cx - tileW/2 + k + tileH, cy + tileH/2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // Building glyph on labels canvas. Hard-skip if tile has no territory —
+      // bulletproof against any upstream path that might leave a stale building.
+      if (!t.cityId && t.type !== P.TILE.CITY) continue;
+      const shouldShow = t.building && showFlags[t.building];
+      if (shouldShow) {
+        const short = BUILDING_SHORT[t.building];
+        const col = BUILDING_COLOR[t.building];
+        const badgeR = Math.min(tileW, tileH) * 0.32;
+        lctx.fillStyle = col;
+        lctx.beginPath(); lctx.arc(cx, cy, badgeR, 0, Math.PI*2); lctx.fill();
+        lctx.fillStyle = '#111';
+        lctx.font = `bold ${Math.max(10, badgeR*0.9)}px system-ui`;
+        lctx.textAlign = 'center'; lctx.textBaseline = 'middle';
+        lctx.fillText(short, cx, cy);
+
+        if (t.building === 'market') {
+          const stars = P.marketStars(grid, r, c);
+          const label = '★ ' + stars;
+          lctx.font = `bold 13px system-ui`;
+          const pad = 5, tw = lctx.measureText(label).width;
+          const pw = tw + pad*2, ph = 18;
+          const px = cx + badgeR - 4, py = cy - badgeR - ph + 4;
+          lctx.fillStyle = '#000d';
+          lctx.beginPath(); roundRect(lctx, px, py, pw, ph, 4); lctx.fill();
+          lctx.strokeStyle = '#ffcf4d'; lctx.lineWidth = 1;
+          lctx.beginPath(); roundRect(lctx, px, py, pw, ph, 4); lctx.stroke();
+          lctx.fillStyle = '#ffcf4d';
+          lctx.textAlign = 'center'; lctx.textBaseline = 'middle';
+          lctx.fillText(label, px + pw/2, py + ph/2 + 1);
+        }
+        if (['windmill','forge','sawmill'].includes(t.building)) {
+          const lvl = P.supplierLevel(grid, r, c, t.building);
+          const label = 'L' + lvl;
+          lctx.font = `bold 12px system-ui`;
+          const pad = 4, tw = lctx.measureText(label).width;
+          const pw = tw + pad*2, ph = 16;
+          const px = cx + badgeR - 4, py = cy - badgeR - ph + 4;
+          lctx.fillStyle = '#000d';
+          lctx.beginPath(); roundRect(lctx, px, py, pw, ph, 4); lctx.fill();
+          lctx.fillStyle = '#7ed957';
+          lctx.textAlign = 'center'; lctx.textBaseline = 'middle';
+          lctx.fillText(label, px + pw/2, py + ph/2 + 1);
+        }
+      }
+    }
+  }
+  document.getElementById('stars').textContent = P.totalStarsPerTurn(grid);
+  let cityN = 0;
+  for (let r=0;r<grid.rows;r++) for (let c=0;c<grid.cols;c++)
+    if (grid.tiles[r][c].type === P.TILE.CITY) cityN++;
+  const cityEl = document.getElementById('cityCount');
+  cityEl.textContent = cityN;
+  cityEl.style.color = cityN ? 'var(--good)' : 'var(--warn)';
+  const errs = P.validateBoard(grid);
+  const errText = errs.length ? errs.join('\n') : 'Board is rule-valid.';
+  const prefix = cityN === 0 ? '⚠ No City tiles painted — paint a red City first; nothing else can be built without territory.\n' : '';
+  document.getElementById('errs').textContent = prefix + errText;
+}
+let _statusTimer = null;
+function flashStatus(msg) {
+  const el = document.getElementById('statusMsg');
+  el.textContent = msg;
+  el.style.display = '';
+  clearTimeout(_statusTimer);
+  _statusTimer = setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+const BUILDING_SHORT = {
+  farm:'Fa', mine:'Mi', lumberhut:'Lh', port:'Po',
+  windmill:'W', forge:'F', sawmill:'S', market:'M'
+};
+const BUILDING_COLOR = {
+  farm:'#b58cff', mine:'#b58cff', lumberhut:'#b58cff', port:'#b58cff',
+  windmill:'#7ed957', forge:'#7ed957', sawmill:'#7ed957',
+  market:'#ffcf4d'
+};
+
+function hexWithAlpha(hex, a) {
+  const m = hex.replace('#','');
+  const r = parseInt(m.substr(0,2),16);
+  const g = parseInt(m.substr(2,2),16);
+  const b = parseInt(m.substr(4,2),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+function roundRect(ctx, x,y,w,h,r) {
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+}
+
+// ---- Calibration state
+let calibStage = 0;            // 0=off, 1=waiting for tile(0,0), 2=waiting for tile(0,cols-1)
+let calibFirst = null;
+const calibBtn = document.getElementById('calibrate');
+calibBtn.onclick = () => {
+  calibStage = 1; calibFirst = null;
+  calibBtn.textContent = 'Calibrate: click top tile (0,0)';
+  calibBtn.style.background = '#ffcf4d'; calibBtn.style.color = '#222';
+};
+
+// ---- Drag:
+//   - Start inside grid  → move grid (offX/offY) over the background image
+//   - Start outside grid → pan the whole view (stageWrap scroll)
+let panning = false, panStart = null, panOrigin = null, dragMoved = false,
+    suppressClick = false, panMode = null; // 'grid' | 'bg'
+const DRAG_THRESHOLD = 4;
+overlay.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  const rect = overlay.getBoundingClientRect();
+  const px = (e.clientX - rect.left) / viewZoom;
+  const py = (e.clientY - rect.top)  / viewZoom;
+  const { r, c } = screenToTile(px, py);
+  const overGrid = r>=0 && c>=0 && r<grid.rows && c<grid.cols;
+  panStart = { x: e.clientX, y: e.clientY };
+  if (overGrid) {
+    panMode = 'grid';
+    panOrigin = { x: offX, y: offY };
+  } else {
+    panMode = 'bg';
+    panOrigin = { x: stageWrap.scrollLeft, y: stageWrap.scrollTop };
+  }
+  panning = true; dragMoved = false;
+});
+window.addEventListener('mousemove', e => {
+  if (!panning) return;
+  const dx = e.clientX - panStart.x, dy = e.clientY - panStart.y;
+  if (!dragMoved && Math.hypot(dx,dy) < DRAG_THRESHOLD) return;
+  dragMoved = true;
+  if (panMode === 'grid') {
+    offX = panOrigin.x + dx / viewZoom;
+    offY = panOrigin.y + dy / viewZoom;
+    document.getElementById('offX').value = offX;
+    document.getElementById('offY').value = offY;
+    document.getElementById('offXv').textContent = offX;
+    document.getElementById('offYv').textContent = offY;
+    draw();
+  } else {
+    stageWrap.scrollLeft = panOrigin.x - dx;
+    stageWrap.scrollTop  = panOrigin.y - dy;
+  }
+});
+window.addEventListener('mouseup', () => {
+  if (panning && dragMoved) suppressClick = true;
+  panning = false; panMode = null;
+});
+
+// ---- View zoom (whole stage: screenshot + grid together)
+const stageWrap = document.getElementById('stageWrap');
+const zoomLabel = document.getElementById('zoomLabel');
+function applyZoom(cursorClientX, cursorClientY) {
+  viewZoom = Math.max(0.1, Math.min(8, viewZoom));
+  stage.style.transform = `scale(${viewZoom})`;
+  // Expand scrollable area so scrollbars match scaled content
+  stageWrap.style.setProperty('--zoom', viewZoom);
+  // We use a sentinel sized to the scaled content:
+  if (!stage._sizer) {
+    stage._sizer = document.createElement('div');
+    stage._sizer.style.cssText = 'position:absolute; left:0; top:0; pointer-events:none;';
+    stageWrap.appendChild(stage._sizer);
+  }
+  stage._sizer.style.width  = (parseInt(stage.style.width)  * viewZoom) + 'px';
+  stage._sizer.style.height = (parseInt(stage.style.height) * viewZoom) + 'px';
+  zoomLabel.textContent = Math.round(viewZoom * 100) + '%';
+}
+function zoomAt(factor, clientX, clientY) {
+  const wrapRect = stageWrap.getBoundingClientRect();
+  // Position within scrolled stage (canvas px) before zoom
+  const sx = (clientX - wrapRect.left + stageWrap.scrollLeft) / viewZoom;
+  const sy = (clientY - wrapRect.top  + stageWrap.scrollTop)  / viewZoom;
+  viewZoom *= factor;
+  applyZoom();
+  // After zoom, adjust scroll so the same canvas point stays under cursor
+  stageWrap.scrollLeft = sx * viewZoom - (clientX - wrapRect.left);
+  stageWrap.scrollTop  = sy * viewZoom - (clientY - wrapRect.top);
+}
+document.getElementById('zoomIn').onclick  = () => { const c = stageWrap.getBoundingClientRect(); zoomAt(1.25, c.left+c.width/2, c.top+c.height/2); };
+document.getElementById('zoomOut').onclick = () => { const c = stageWrap.getBoundingClientRect(); zoomAt(1/1.25, c.left+c.width/2, c.top+c.height/2); };
+document.getElementById('zoomReset').onclick = () => {
+  const wrapRect = stageWrap.getBoundingClientRect();
+  const sw = parseInt(stage.style.width), sh = parseInt(stage.style.height);
+  viewZoom = Math.min(wrapRect.width/sw, wrapRect.height/sh, 1);
+  applyZoom();
+  stageWrap.scrollLeft = 0; stageWrap.scrollTop = 0;
+};
+// Ctrl/Cmd + wheel = zoom; plain wheel = scroll (browser default).
+stageWrap.addEventListener('wheel', e => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  e.preventDefault();
+  zoomAt(e.deltaY < 0 ? 1.1 : 1/1.1, e.clientX, e.clientY);
+}, { passive: false });
+applyZoom();
+
+// ---- Click: calibrate OR paint
+overlay.addEventListener('click', e => {
+  if (suppressClick) { suppressClick = false; return; }
+  const rect = overlay.getBoundingClientRect();
+  const px = (e.clientX - rect.left) / viewZoom;
+  const py = (e.clientY - rect.top)  / viewZoom;
+
+  if (calibStage === 1) {
+    calibFirst = { x: px, y: py };
+    calibStage = 2;
+    calibBtn.textContent = 'Calibrate: click tile (0, ' + (grid.cols-1) + ')';
+    return;
+  }
+  if (calibStage === 2) {
+    const x1 = calibFirst.x, y1 = calibFirst.y;
+    const x2 = px, y2 = py;
+    const n = grid.cols - 1;
+    if (n <= 0) { alert('Need at least 2 columns to calibrate.'); calibStage = 0; return; }
+    // Tile (0,0) center = (offX, offY). Tile (0,n) center = (offX + n*tileW/2, offY + n*tileH/2).
+    tileW = 2 * (x2 - x1) / n;
+    tileH = 2 * (y2 - y1) / n;
+    if (tileW <= 0 || tileH <= 0) {
+      alert('Calibration failed: second click must be to the lower-right of the first (top-right edge of map).');
+      calibStage = 0; calibBtn.textContent = 'Calibrate (2 clicks)'; calibBtn.style.background=''; calibBtn.style.color='';
+      return;
+    }
+    offX = x1; offY = y1;
+    document.getElementById('tileW').value = Math.round(tileW);
+    document.getElementById('tileH').value = Math.round(tileH);
+    document.getElementById('offX').value = Math.round(offX);
+    document.getElementById('offY').value = Math.round(offY);
+    document.getElementById('offXv').textContent = Math.round(offX);
+    document.getElementById('offYv').textContent = Math.round(offY);
+    calibStage = 0;
+    calibBtn.textContent = 'Calibrate (2 clicks)';
+    calibBtn.style.background=''; calibBtn.style.color='';
+    draw();
+    return;
+  }
+
+  const { r, c } = screenToTile(px, py);
+  if (r<0||c<0||r>=grid.rows||c>=grid.cols) return;
+  const t = grid.tiles[r][c];
+
+  if (currentTool === 'territory') {
+    // Click a city to select it; click a non-city tile to toggle its manual assignment.
+    if (t.type === P.TILE.CITY) {
+      selectedCity = r+','+c;
+      updateSelectedCityLabel();
+      draw();
+      return;
+    }
+    if (!selectedCity) {
+      alert('Pick a City tile first — click a red City tile in Assign territory mode to select it, then click surrounding tiles to assign them.');
+      return;
+    }
+    if (t.type === P.TILE.FOG) return;
+    // Hard-cap manual assignment to the city's 5×5 (Chebyshev ≤ 2). Tiles
+    // farther than that are not part of the city's territory under any circumstance.
+    const [scR, scC] = selectedCity.split(',').map(Number);
+    const dist = Math.max(Math.abs(r - scR), Math.abs(c - scC));
+    if (dist > 2) {
+      flashStatus("Can't assign — that tile is outside the city's 5×5 territory.");
+      return;
+    }
+    // Toggle: if already manually assigned to this city, clear it; else set to it.
+    if (t.manualCity === selectedCity) t.manualCity = null;
+    else t.manualCity = selectedCity;
+    draw();
+    return;
+  }
+
+  // Normal paint
+  if (e.shiftKey) { t.type = P.TILE.FIELD; t.building = null; t.chopped = false; t.manualCity = null; }
+  else {
+    const prevType = t.type;
+    const pEntry = PALETTE.find(p => p.key === paintType);
+    // Block building paint on tiles outside any city's territory — you can't
+    // build there. Terrain paint is still allowed (needed to map the board).
+    if (pEntry && pEntry.building && !t.cityId && t.type !== P.TILE.CITY) {
+      flashStatus("Can't place a building outside city territory (5×5 around a City tile).");
+      return;
+    }
+    if (pEntry && pEntry.building) {
+      // Windmill / Sawmill cannot be placed on Mountain or Ore (mine) tiles.
+      if ((pEntry.building === 'windmill' || pEntry.building === 'sawmill') &&
+          (t.type === P.TILE.MOUNTAIN || t.type === P.TILE.ORE)) {
+        flashStatus(`Can't place ${pEntry.label} on ${t.type === P.TILE.ORE ? 'Ore/Mine' : 'Mountain'} tiles.`);
+        return;
+      }
+      t.type = pEntry.terrain; t.building = pEntry.building; t.chopped = false;
+    } else {
+      t.type = paintType; t.building = null; t.chopped = false;
+    }
+    // When placing a City, auto-assign its full 5×5 (24 surrounding tiles) via
+    // manualCity. First-come-first-served: don't steal tiles already assigned
+    // to another city. The user can still toggle individual tiles in territory mode.
+    if (t.type === P.TILE.CITY && prevType !== P.TILE.CITY) {
+      const key = r+','+c;
+      // Auto-assign only the 8 immediately adjacent tiles (Chebyshev ≤ 1).
+      // The outer ring (dist = 2) is inside the city's 5×5 and can still be
+      // manually assigned via Assign-territory mode, but isn't auto-claimed.
+      for (let dr=-1; dr<=1; dr++) for (let dc=-1; dc<=1; dc++) {
+        if (!dr && !dc) continue;
+        const nr = r+dr, nc = c+dc;
+        if (nr<0||nc<0||nr>=grid.rows||nc>=grid.cols) continue;
+        const nt = grid.tiles[nr][nc];
+        if (nt.type === P.TILE.CITY || nt.type === P.TILE.FOG) continue;
+        if (nt.manualCity) continue; // first city wins
+        nt.manualCity = key;
+      }
+    }
+    // If a city tile is repainted as something else, drop any manual assignments
+    // that were pointing at it.
+    if (prevType === P.TILE.CITY && paintType !== P.TILE.CITY) {
+      const gone = r+','+c;
+      for (let rr=0; rr<grid.rows; rr++) for (let cc=0; cc<grid.cols; cc++)
+        if (grid.tiles[rr][cc].manualCity === gone) grid.tiles[rr][cc].manualCity = null;
+      if (selectedCity === gone) { selectedCity = null; updateSelectedCityLabel(); }
+    }
+  }
+  draw();
+});
+function updateSelectedCityLabel(){
+  const el = document.getElementById('selectedCityLabel');
+  el.textContent = selectedCity ? ('Selected city: ('+selectedCity+')') : 'No city selected';
+}
+document.querySelectorAll('input[name="tool"]').forEach(r => {
+  r.addEventListener('change', () => { currentTool = r.value; draw(); });
+});
+document.getElementById('clearManual').onclick = () => {
+  for (let r=0; r<grid.rows; r++) for (let c=0; c<grid.cols; c++)
+    grid.tiles[r][c].manualCity = null;
+  draw();
+};
+wireToggles();
+
+// ---- Controls
+document.getElementById('file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  bgImg.onload = () => { resizeStage(); draw(); };
+  bgImg.src = url;
+});
+document.getElementById('clearImg').onclick = () => { bgImg.removeAttribute('src'); resizeStage(); draw(); };
+
+function readNum(id) { return parseInt(document.getElementById(id).value, 10); }
+document.getElementById('applyGrid').onclick = () => {
+  const r = readNum('rows'), c = readNum('cols');
+  tileW = readNum('tileW'); tileH = readNum('tileH');
+  offX = readNum('offX');  offY = readNum('offY');
+  const ng = P.makeGrid(r, c);
+  for (let rr=0; rr<Math.min(r, grid.rows); rr++)
+    for (let cc=0; cc<Math.min(c, grid.cols); cc++) {
+      ng.tiles[rr][cc].type = grid.tiles[rr][cc].type;
+      ng.tiles[rr][cc].building = grid.tiles[rr][cc].building;
+    }
+  grid = ng;
+  draw();
+};
+['offX','offY'].forEach(id => {
+  document.getElementById(id).addEventListener('input', e => {
+    if (id==='offX') offX = +e.target.value;
+    if (id==='offY') offY = +e.target.value;
+    document.getElementById(id+'v').textContent = e.target.value;
+    draw();
+  });
+});
+['tileW','tileH','rows','cols'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    document.getElementById('applyGrid').click();
+  });
+});
+
+document.getElementById('runOpt').onclick = () => {
+  // Warn if the grid has no resource tiles — optimizer will correctly do nothing.
+  let hasResource = false;
+  for (let r=0; r<grid.rows && !hasResource; r++)
+    for (let c=0; c<grid.cols && !hasResource; c++) {
+      const tt = grid.tiles[r][c].type;
+      if (tt==='crop' || tt==='ore' || tt==='forest' || tt==='water') hasResource = true;
+    }
+  if (!hasResource) {
+    alert('No Crop / Ore / Forest / Water tiles painted yet.\n\n'
+        + 'Pick a tile type in the left palette, click tiles on the grid to paint resources, '
+        + 'then press "Find optimal markets".');
+    return;
+  }
+  const loading = document.getElementById('loading');
+  loading.classList.add('on');
+  // Yield to the browser so the overlay actually paints before the synchronous
+  // optimizer blocks the main thread.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    try {
+      const { grid: ng, stars } = P.optimize(grid);
+      grid = ng;
+      draw();
+    } finally {
+      loading.classList.remove('on');
+    }
+  }));
+};
+document.getElementById('clearAll').onclick = () => {
+  if (!confirm('Wipe the entire grid? All terrain, buildings, and territory will be reset.')) return;
+  grid = P.makeGrid(grid.rows, grid.cols);
+  selectedCity = null;
+  updateSelectedCityLabel();
+  draw();
+};
+document.getElementById('clearAssign').onclick = () => {
+  for (let r=0; r<grid.rows; r++) for (let c=0; c<grid.cols; c++) {
+    const t = grid.tiles[r][c];
+    if (['windmill','forge','sawmill','market'].includes(t.building)) t.building = null;
+  }
+  draw();
+};
+
+// ---- Init
+resizeStage();
+draw();
+</script>
+</body>
+</html>
