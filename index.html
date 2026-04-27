@@ -60,6 +60,9 @@
   <button class="secondary" id="clearAssign">Clear suppliers/markets</button>
   <button class="secondary" id="clearAll">Clear grid</button>
   <button class="secondary" id="removeGrid">Remove grid</button>
+  <label class="stat" style="display:flex; gap:6px; align-items:center; cursor:pointer; font-size:12px">
+    <input type="checkbox" id="lockGrid"/> <span>Lock grid</span>
+  </label>
   <div class="stat" style="display:flex; gap:4px; align-items:center">
     Zoom
     <button class="secondary" id="zoomOut" style="padding:2px 8px">−</button>
@@ -72,15 +75,6 @@
 <main>
   <aside>
     <h2>Grid</h2>
-    <label class="legend" style="display:flex; gap:6px; align-items:center; margin-bottom:6px; cursor:pointer">
-      <input type="checkbox" id="lockGrid"/> <span>Lock grid (drag pans the view instead of moving the grid)</span>
-    </label>
-    <div class="row"><label>Rows</label><input type="number" id="rows" value="60" min="2" max="120"/></div>
-    <div class="row"><label>Cols</label><input type="number" id="cols" value="60" min="2" max="120"/></div>
-    <div class="row"><label>Tile W</label><input type="number" id="tileW" value="80" min="16" max="240"/></div>
-    <div class="row"><label>Tile H</label><input type="number" id="tileH" value="40" min="8"  max="160"/></div>
-    <div class="row"><label>Off X</label><input type="range" id="offX" min="-3000" max="3000" value="500"/><span id="offXv">500</span></div>
-    <div class="row"><label>Off Y</label><input type="range" id="offY" min="-3000" max="3000" value="40"/><span id="offYv">40</span></div>
     <button class="action" id="calibrate" style="margin-top:6px; width:100%; background:#7ed957; color:#222">Auto-align grid (9 clicks)</button>
     <div class="row" style="margin-top:6px"><label>Spacing</label><input type="number" id="calibSpacing" value="1" min="1" max="20"/><span class="legend">tiles between clicks (↑ for precision)</span></div>
     <div style="display:flex; gap:8px; align-items:center; margin-top:6px">
@@ -90,6 +84,19 @@
       </div>
     </div>
     <button class="action" id="addEmptyGrid" style="margin-top:6px; width:100%; background:#aaa; color:#222">Add grid manually</button>
+    <div class="row"><label>Rows</label><input type="number" id="rows" value="60" min="2" max="120"/></div>
+    <div class="row"><label>Cols</label><input type="number" id="cols" value="60" min="2" max="120"/></div>
+    <div class="row"><label>Tile W</label><input type="number" id="tileW" value="80" min="16" max="240"/></div>
+    <div class="row"><label>Tile H</label><input type="number" id="tileH" value="40" min="8"  max="160"/></div>
+    <div class="row"><label>Off X</label><input type="range" id="offX" min="-3000" max="3000" value="500"/><span id="offXv">500</span></div>
+    <div class="row"><label>Off Y</label><input type="range" id="offY" min="-3000" max="3000" value="40"/><span id="offYv">40</span></div>
+    <div style="display:flex; gap:6px; margin-top:6px">
+      <button class="secondary" id="setAnchor" style="flex:1; font-size:11px">Set anchor (click intersection)</button>
+      <button class="secondary" id="clearAnchor" style="font-size:11px; display:none">Remove</button>
+    </div>
+    <div id="anchorInfo" class="legend" style="margin-top:4px; display:none">
+      Anchor locked at <span id="anchorCoords"></span>. Tile W/H changes pivot around this point.
+    </div>
     <div class="legend" style="margin-top:4px">
       Click + drag to pan. Ctrl + wheel to zoom.
     </div>
@@ -555,6 +562,27 @@ function screenToTile(px, py) {
   const r = (b - a) / 2;      // fractional row
   return { r: Math.round(r), c: Math.round(c) };
 }
+// Nearest grid vertex (where 4 tiles meet) in iso (R,C) coords. Both R and C
+// land on half-integers (e.g., 0.5, 1.5, ...).
+function screenToVertex(px, py) {
+  const dx = px - offX, dy = py - offY;
+  const a = dx / (tileW/2);
+  const b = dy / (tileH/2);
+  const C = (a + b) / 2, R = (b - a) / 2;
+  const snap = v => Math.round(v - 0.5) + 0.5;
+  return { R: snap(R), C: snap(C) };
+}
+function vertexScreen(v) {
+  return {
+    x: offX + (v.C - v.R) * (tileW/2),
+    y: offY + (v.C + v.R) * (tileH/2)
+  };
+}
+// User-picked anchor vertex (in iso half-integer coords). When set, tile-size
+// changes pivot around this point: offX/offY recompute so the anchor's screen
+// position stays fixed.
+let gridAnchor = null;
+let anchorPickMode = false;
 
 // ---- Palette
 const PALETTE = [
@@ -633,13 +661,51 @@ function diamondPath(ctx, cx, cy) {
   ctx.closePath();
 }
 
+function drawCalibDots(lctx) {
+  if (!calibClicks.length) return;
+  for (let i = 0; i < calibClicks.length; i++) {
+    const { x, y } = calibClicks[i];
+    lctx.beginPath();
+    lctx.arc(x, y, 6, 0, Math.PI*2);
+    lctx.fillStyle = '#ff4d4d';
+    lctx.fill();
+    lctx.strokeStyle = '#fff';
+    lctx.lineWidth = 2;
+    lctx.stroke();
+    lctx.fillStyle = '#fff';
+    lctx.font = 'bold 10px system-ui';
+    lctx.textAlign = 'center';
+    lctx.textBaseline = 'middle';
+    lctx.fillText(String(i+1), x, y);
+  }
+}
+function drawAnchorMarker(lctx) {
+  if (!gridAnchor) return;
+  const { x, y } = vertexScreen(gridAnchor);
+  lctx.save();
+  lctx.strokeStyle = '#ff3b3b';
+  lctx.lineWidth = 3;
+  lctx.beginPath();
+  lctx.arc(x, y, 10, 0, Math.PI*2);
+  lctx.stroke();
+  lctx.lineWidth = 2;
+  lctx.beginPath();
+  lctx.moveTo(x - 14, y); lctx.lineTo(x + 14, y);
+  lctx.moveTo(x, y - 14); lctx.lineTo(x, y + 14);
+  lctx.stroke();
+  lctx.restore();
+}
 function draw() {
   resizeStage();
   const ctx = overlay.getContext('2d');
   const lctx = labels.getContext('2d');
   ctx.clearRect(0,0,overlay.width,overlay.height);
   lctx.clearRect(0,0,labels.width,labels.height);
-  if (!gridReady) return;
+  if (!gridReady) {
+    drawCalibDots(lctx);
+    drawAnchorMarker(lctx);
+    return;
+  }
   // Recompute city territory assignment so the "one market per city" rule and
   // territory tints reflect the current map (cheap; runs only on redraw).
   assignCities(grid);
@@ -783,6 +849,8 @@ function draw() {
       }
     }
   }
+  drawCalibDots(lctx);
+  drawAnchorMarker(lctx);
   document.getElementById('stars').textContent = P.totalStarsPerTurn(grid);
   let cityN = 0;
   for (let r=0;r<grid.rows;r++) for (let c=0;c<grid.cols;c++)
@@ -869,8 +937,11 @@ calibBtn.onclick = () => {
   const K = Math.max(1, parseInt(calibSpacingInput.value, 10) || 3);
   calibSpacing = K;
   calibStage = 1; calibClicks = [];
+  anchorPickMode = false;
+  if (typeof updateAnchorUI === 'function') updateAnchorUI();
   calibBtn.textContent = calibPromptText();
   calibBtn.style.background = '#ffcf4d'; calibBtn.style.color = '#222';
+  draw();
 };
 
 // Render the example SVG: 9 diamond tiles arranged as a 3×3 in iso (r,c)
@@ -1003,11 +1074,20 @@ overlay.addEventListener('click', e => {
   const px = (e.clientX - rect.left) / viewZoom;
   const py = (e.clientY - rect.top)  / viewZoom;
 
+  if (anchorPickMode) {
+    gridAnchor = screenToVertex(px, py);
+    anchorPickMode = false;
+    updateAnchorUI();
+    draw();
+    return;
+  }
+
   if (calibStage >= 1 && calibStage <= CALIB_NEEDED) {
     calibClicks.push({ x: px, y: py });
     if (calibStage < CALIB_NEEDED) {
       calibStage++;
       calibBtn.textContent = calibPromptText();
+      draw();
       return;
     }
     // All 9 clicks collected. Each click i has known integer (dr_i, dc_i) in
@@ -1184,6 +1264,44 @@ function updateSelectedCityLabel(){
 document.querySelectorAll('input[name="tool"]').forEach(r => {
   r.addEventListener('change', () => { currentTool = r.value; draw(); });
 });
+function updateAnchorUI() {
+  const setBtn = document.getElementById('setAnchor');
+  const clrBtn = document.getElementById('clearAnchor');
+  const info = document.getElementById('anchorInfo');
+  const coords = document.getElementById('anchorCoords');
+  if (anchorPickMode) {
+    setBtn.textContent = 'Click an intersection…';
+    setBtn.style.background = '#ffcf4d';
+    setBtn.style.color = '#222';
+  } else {
+    setBtn.textContent = gridAnchor ? 'Move anchor' : 'Set anchor (click intersection)';
+    setBtn.style.background = '';
+    setBtn.style.color = '';
+  }
+  if (gridAnchor) {
+    clrBtn.style.display = '';
+    info.style.display = '';
+    coords.textContent = `R=${gridAnchor.R}, C=${gridAnchor.C}`;
+  } else {
+    clrBtn.style.display = 'none';
+    info.style.display = 'none';
+  }
+}
+document.getElementById('setAnchor').onclick = () => {
+  anchorPickMode = !anchorPickMode;
+  if (anchorPickMode) {
+    calibStage = 0; calibClicks = []; resetCalibBtn();
+  }
+  updateAnchorUI();
+  draw();
+};
+document.getElementById('clearAnchor').onclick = () => {
+  gridAnchor = null;
+  anchorPickMode = false;
+  updateAnchorUI();
+  draw();
+};
+
 document.getElementById('clearManual').onclick = () => {
   for (let r=0; r<grid.rows; r++) for (let c=0; c<grid.cols; c++)
     grid.tiles[r][c].manualCity = null;
@@ -1248,6 +1366,31 @@ document.getElementById('removeGrid').onclick = () => {
     // Keep ratio lock: editing Tile H mirrors into Tile W before apply.
     if (id === 'tileH') {
       document.getElementById('tileW').value = Math.round(readNum('tileH') * POLYTOPIA_WH_RATIO);
+    }
+    if (id === 'tileW' || id === 'tileH') {
+      const newTileW = readNum('tileW');
+      const newTileH = newTileW / POLYTOPIA_WH_RATIO;
+      const offXInput = document.getElementById('offX');
+      const offYInput = document.getElementById('offY');
+      let newOffX, newOffY;
+      if (gridAnchor) {
+        // Pivot tile-size changes around the user-picked anchor: keep its
+        // screen position fixed and recompute offX/offY.
+        const Sx = offX + (gridAnchor.C - gridAnchor.R) * (tileW / 2);
+        const Sy = offY + (gridAnchor.C + gridAnchor.R) * (tileH / 2);
+        newOffX = Math.round(Sx - (gridAnchor.C - gridAnchor.R) * (newTileW / 2));
+        newOffY = Math.round(Sy - (gridAnchor.C + gridAnchor.R) * (newTileH / 2));
+      } else {
+        // Default: anchor the bottom vertex of the grid.
+        const oldBottomY = offY + (grid.rows + grid.cols - 1) * (tileH / 2);
+        const newRows = readNum('rows'), newCols = readNum('cols');
+        newOffX = offX;
+        newOffY = Math.round(oldBottomY - (newRows + newCols - 1) * (newTileH / 2));
+      }
+      offXInput.value = Math.max(+offXInput.min, Math.min(+offXInput.max, newOffX));
+      document.getElementById('offXv').textContent = offXInput.value;
+      offYInput.value = Math.max(+offYInput.min, Math.min(+offYInput.max, newOffY));
+      document.getElementById('offYv').textContent = offYInput.value;
     }
     if (gridReady) applyGridFromInputs();
   });
