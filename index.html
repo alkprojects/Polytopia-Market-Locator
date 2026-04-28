@@ -84,19 +84,27 @@
       </div>
     </div>
     <button class="action" id="addEmptyGrid" style="margin-top:6px; width:100%; background:#aaa; color:#222">Add grid manually</button>
+    <h2 style="margin-top:10px">Fine tune grid</h2>
+    <div style="display:flex; gap:6px; margin-top:4px">
+      <button class="secondary" id="setAnchor" style="flex:1; font-size:11px">Set anchor 1</button>
+      <button class="secondary" id="clearAnchor" style="font-size:11px; display:none">Remove</button>
+    </div>
+    <div style="display:flex; gap:6px; margin-top:4px">
+      <button class="secondary" id="setAnchor2" style="flex:1; font-size:11px">Set anchor 2</button>
+      <button class="secondary" id="clearAnchor2" style="font-size:11px; display:none">Remove</button>
+    </div>
+    <div id="anchorInfo" class="legend" style="margin-top:4px; display:none">
+      Anchor 1 locked at <span id="anchorCoords"></span>. Tile W/H changes pivot around this point.
+    </div>
+    <div id="anchor2Info" class="legend" style="margin-top:4px; display:none">
+      Anchor 2 locked at <span id="anchor2Coords"></span>. Click + drag near it to scale the grid (anchor 1 stays fixed, W/H ratio preserved).
+    </div>
     <div class="row"><label>Rows</label><input type="number" id="rows" value="60" min="2" max="120"/></div>
     <div class="row"><label>Cols</label><input type="number" id="cols" value="60" min="2" max="120"/></div>
     <div class="row"><label>Tile W</label><input type="number" id="tileW" value="80" min="16" max="240"/></div>
     <div class="row"><label>Tile H</label><input type="number" id="tileH" value="40" min="8"  max="160"/></div>
     <div class="row"><label>Off X</label><input type="range" id="offX" min="-3000" max="3000" value="500"/><span id="offXv">500</span></div>
     <div class="row"><label>Off Y</label><input type="range" id="offY" min="-3000" max="3000" value="40"/><span id="offYv">40</span></div>
-    <div style="display:flex; gap:6px; margin-top:6px">
-      <button class="secondary" id="setAnchor" style="flex:1; font-size:11px">Set anchor (click intersection)</button>
-      <button class="secondary" id="clearAnchor" style="font-size:11px; display:none">Remove</button>
-    </div>
-    <div id="anchorInfo" class="legend" style="margin-top:4px; display:none">
-      Anchor locked at <span id="anchorCoords"></span>. Tile W/H changes pivot around this point.
-    </div>
     <div class="legend" style="margin-top:4px">
       Click + drag to pan. Ctrl + wheel to zoom.
     </div>
@@ -582,7 +590,11 @@ function vertexScreen(v) {
 // changes pivot around this point: offX/offY recompute so the anchor's screen
 // position stays fixed.
 let gridAnchor = null;
+let gridAnchor2 = null;
 let anchorPickMode = false;
+let anchor2PickMode = false;
+// Active drag of anchor 2 (set in mousedown, cleared on mouseup).
+let anchor2Drag = null;
 
 // ---- Palette
 const PALETTE = [
@@ -679,11 +691,10 @@ function drawCalibDots(lctx) {
     lctx.fillText(String(i+1), x, y);
   }
 }
-function drawAnchorMarker(lctx) {
-  if (!gridAnchor) return;
-  const { x, y } = vertexScreen(gridAnchor);
+function drawOneAnchor(lctx, anchor, label, color) {
+  const { x, y } = vertexScreen(anchor);
   lctx.save();
-  lctx.strokeStyle = '#ff3b3b';
+  lctx.strokeStyle = color;
   lctx.lineWidth = 3;
   lctx.beginPath();
   lctx.arc(x, y, 10, 0, Math.PI*2);
@@ -693,7 +704,16 @@ function drawAnchorMarker(lctx) {
   lctx.moveTo(x - 14, y); lctx.lineTo(x + 14, y);
   lctx.moveTo(x, y - 14); lctx.lineTo(x, y + 14);
   lctx.stroke();
+  lctx.fillStyle = color;
+  lctx.font = 'bold 11px system-ui';
+  lctx.textAlign = 'left';
+  lctx.textBaseline = 'middle';
+  lctx.fillText(label, x + 14, y - 12);
   lctx.restore();
+}
+function drawAnchorMarker(lctx) {
+  if (gridAnchor)  drawOneAnchor(lctx, gridAnchor,  '1', '#ff3b3b');
+  if (gridAnchor2) drawOneAnchor(lctx, gridAnchor2, '2', '#3bbfff');
 }
 function draw() {
   resizeStage();
@@ -985,6 +1005,20 @@ overlay.addEventListener('mousedown', e => {
   const rect = overlay.getBoundingClientRect();
   const px = (e.clientX - rect.left) / viewZoom;
   const py = (e.clientY - rect.top)  / viewZoom;
+  // If both anchors are set and the press is near anchor 2, start an
+  // anchor-2 scale-drag instead of panning.
+  if (gridAnchor && gridAnchor2 && !anchorPickMode && !anchor2PickMode) {
+    const a2 = vertexScreen(gridAnchor2);
+    const grab = 18 / viewZoom;
+    if (Math.hypot(px - a2.x, py - a2.y) <= grab) {
+      const a1 = vertexScreen(gridAnchor);
+      anchor2Drag = { a1x: a1.x, a1y: a1.y };
+      panStart = { x: e.clientX, y: e.clientY };
+      panMode = 'anchor2';
+      panning = true; dragMoved = false;
+      return;
+    }
+  }
   const { r, c } = screenToTile(px, py);
   const overGrid = gridReady && r>=0 && c>=0 && r<grid.rows && c<grid.cols;
   const gridLocked = document.getElementById('lockGrid').checked;
@@ -1011,6 +1045,40 @@ window.addEventListener('mousemove', e => {
     document.getElementById('offXv').textContent = offX;
     document.getElementById('offYv').textContent = offY;
     draw();
+  } else if (panMode === 'anchor2') {
+    // Cursor in stage coords (compensate for view zoom).
+    const rect = overlay.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) / viewZoom;
+    const cy = (e.clientY - rect.top)  / viewZoom;
+    // Solve for tileW so anchor 2 lands at the cursor (least-squares onto the
+    // ratio-locked iso line through anchor 1). offX/offY then recompute to
+    // pin anchor 1 in place.
+    const dC = gridAnchor2.C - gridAnchor.C;
+    const dR = gridAnchor2.R - gridAnchor.R;
+    // unit-tileW direction (with tileH = tileW / RATIO):
+    const ux = (dC - dR) / 2;
+    const uy = (dC + dR) / (2 * POLYTOPIA_WH_RATIO);
+    const denom = ux*ux + uy*uy;
+    if (denom > 1e-6) {
+      const Vx = cx - anchor2Drag.a1x;
+      const Vy = cy - anchor2Drag.a1y;
+      let newW = (Vx*ux + Vy*uy) / denom;
+      newW = Math.max(8, Math.min(800, newW));
+      const newH = newW / POLYTOPIA_WH_RATIO;
+      tileW = newW;
+      tileH = newH;
+      offX = anchor2Drag.a1x - (gridAnchor.C - gridAnchor.R) * (newW/2);
+      offY = anchor2Drag.a1y - (gridAnchor.C + gridAnchor.R) * (newH/2);
+      document.getElementById('tileW').value = Math.round(tileW);
+      document.getElementById('tileH').value = Math.round(tileH);
+      const offXInput = document.getElementById('offX');
+      const offYInput = document.getElementById('offY');
+      offXInput.value = Math.max(+offXInput.min, Math.min(+offXInput.max, Math.round(offX)));
+      offYInput.value = Math.max(+offYInput.min, Math.min(+offYInput.max, Math.round(offY)));
+      document.getElementById('offXv').textContent = offXInput.value;
+      document.getElementById('offYv').textContent = offYInput.value;
+      draw();
+    }
   } else {
     stageWrap.scrollLeft = panOrigin.x - dx;
     stageWrap.scrollTop  = panOrigin.y - dy;
@@ -1018,7 +1086,7 @@ window.addEventListener('mousemove', e => {
 });
 window.addEventListener('mouseup', () => {
   if (panning && dragMoved) suppressClick = true;
-  panning = false; panMode = null;
+  panning = false; panMode = null; anchor2Drag = null;
 });
 
 // ---- View zoom (whole stage: screenshot + grid together)
@@ -1077,6 +1145,13 @@ overlay.addEventListener('click', e => {
   if (anchorPickMode) {
     gridAnchor = screenToVertex(px, py);
     anchorPickMode = false;
+    updateAnchorUI();
+    draw();
+    return;
+  }
+  if (anchor2PickMode) {
+    gridAnchor2 = screenToVertex(px, py);
+    anchor2PickMode = false;
     updateAnchorUI();
     draw();
     return;
@@ -1274,7 +1349,7 @@ function updateAnchorUI() {
     setBtn.style.background = '#ffcf4d';
     setBtn.style.color = '#222';
   } else {
-    setBtn.textContent = gridAnchor ? 'Move anchor' : 'Set anchor (click intersection)';
+    setBtn.textContent = gridAnchor ? 'Move anchor 1' : 'Set anchor 1';
     setBtn.style.background = '';
     setBtn.style.color = '';
   }
@@ -1286,10 +1361,32 @@ function updateAnchorUI() {
     clrBtn.style.display = 'none';
     info.style.display = 'none';
   }
+  const setBtn2 = document.getElementById('setAnchor2');
+  const clrBtn2 = document.getElementById('clearAnchor2');
+  const info2 = document.getElementById('anchor2Info');
+  const coords2 = document.getElementById('anchor2Coords');
+  if (anchor2PickMode) {
+    setBtn2.textContent = 'Click an intersection…';
+    setBtn2.style.background = '#ffcf4d';
+    setBtn2.style.color = '#222';
+  } else {
+    setBtn2.textContent = gridAnchor2 ? 'Move anchor 2' : 'Set anchor 2';
+    setBtn2.style.background = '';
+    setBtn2.style.color = '';
+  }
+  if (gridAnchor2) {
+    clrBtn2.style.display = '';
+    info2.style.display = '';
+    coords2.textContent = `R=${gridAnchor2.R}, C=${gridAnchor2.C}`;
+  } else {
+    clrBtn2.style.display = 'none';
+    info2.style.display = 'none';
+  }
 }
 document.getElementById('setAnchor').onclick = () => {
   anchorPickMode = !anchorPickMode;
   if (anchorPickMode) {
+    anchor2PickMode = false;
     calibStage = 0; calibClicks = []; resetCalibBtn();
   }
   updateAnchorUI();
@@ -1298,6 +1395,21 @@ document.getElementById('setAnchor').onclick = () => {
 document.getElementById('clearAnchor').onclick = () => {
   gridAnchor = null;
   anchorPickMode = false;
+  updateAnchorUI();
+  draw();
+};
+document.getElementById('setAnchor2').onclick = () => {
+  anchor2PickMode = !anchor2PickMode;
+  if (anchor2PickMode) {
+    anchorPickMode = false;
+    calibStage = 0; calibClicks = []; resetCalibBtn();
+  }
+  updateAnchorUI();
+  draw();
+};
+document.getElementById('clearAnchor2').onclick = () => {
+  gridAnchor2 = null;
+  anchor2PickMode = false;
   updateAnchorUI();
   draw();
 };
