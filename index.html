@@ -136,6 +136,10 @@
       <label><input type="checkbox" class="enable" data-enable="forge"    checked/> Forges</label>
       <label><input type="checkbox" class="enable" data-enable="sawmill"  checked/> Sawmills</label>
       <label><input type="checkbox" class="enable" data-enable="chop"     checked/> Chop forests</label>
+      <label title="Grow Forest: turn an empty Field tile in city territory into Forest (then place a Lumber Hut or Forge on it).">
+        <input type="checkbox" class="enable" data-enable="spiritualism"/> Spiritualism (grow forest)</label>
+      <label title="Burn Forest: turn an empty Forest tile in city territory into Crop (then place a Farm on it). Combine with Spiritualism to chain Field → Forest → Crop.">
+        <input type="checkbox" class="enable" data-enable="construction"/> Construction (burn forest)</label>
     </div>
 
     <h2>Show on map</h2>
@@ -193,7 +197,17 @@
 const TILE = { FIELD:'field', FOREST:'forest', MOUNTAIN:'mountain',
   CROP:'crop', ORE:'ore', WATER:'water', CITY:'city', BLOCKED:'blocked', FOG:'fog' };
 // Effective terrain: chopped forests behave as empty Fields for building rules.
-function effType(t) { return (t.chopped && t.type === TILE.FOREST) ? TILE.FIELD : t.type; }
+// Effective terrain after optimizer-applied transformations:
+//   chopped: forest tile (or grown-forest tile) reverts to field
+//   grown:   field tile becomes forest (Spiritualism / Grow Forest)
+//   burned:  forest (or grown forest) becomes crop (Construction / Burn Forest)
+// Burn always yields crop regardless of chop state.
+function effType(t) {
+  if (t.burned) return TILE.CROP;
+  if (t.chopped && (t.type === TILE.FOREST || t.grown)) return TILE.FIELD;
+  if (t.grown   && t.type === TILE.FIELD) return TILE.FOREST;
+  return t.type;
+}
 const BUILD = { NONE:null, FARM:'farm', MINE:'mine', LUMBERHUT:'lumberhut', PORT:'port',
   WINDMILL:'windmill', FORGE:'forge', SAWMILL:'sawmill', MARKET:'market' };
 // Current Polytopia rules: Windmill/Forge/Sawmill are the only market-feeding
@@ -213,7 +227,7 @@ function makeGrid(rows,cols){
   const tiles=[];
   for(let r=0;r<rows;r++){
     const row=[];
-    for(let c=0;c<cols;c++) row.push({r,c,type:TILE.FIELD,building:null,chopped:false,cityId:0,manualCity:null});
+    for(let c=0;c<cols;c++) row.push({r,c,type:TILE.FIELD,building:null,chopped:false,grown:false,burned:false,cityId:0,manualCity:null});
     tiles.push(row);
   }
   return {rows,cols,tiles};
@@ -242,9 +256,9 @@ function validateBoard(g){
     if(t.type===TILE.FOG && b) errs.push(`Building at ${r},${c} is inside fog of war`);
     if(!b) continue;
     if(!t.cityId && t.type!==TILE.CITY) errs.push(`${b} at ${r},${c} is outside any city's territory`);
-    if(b===BUILD.FARM && t.type!==TILE.CROP) errs.push(`Farm at ${r},${c} not on Crop`);
-    if(b===BUILD.MINE && t.type!==TILE.ORE) errs.push(`Mine at ${r},${c} not on Ore`);
-    if(b===BUILD.LUMBERHUT && (t.type!==TILE.FOREST || t.chopped)) errs.push(`Lumber Hut at ${r},${c} not on (unchopped) Forest`);
+    if(b===BUILD.FARM && effType(t)!==TILE.CROP) errs.push(`Farm at ${r},${c} not on Crop`);
+    if(b===BUILD.MINE && effType(t)!==TILE.ORE) errs.push(`Mine at ${r},${c} not on Ore`);
+    if(b===BUILD.LUMBERHUT && effType(t)!==TILE.FOREST) errs.push(`Lumber Hut at ${r},${c} not on (unchopped) Forest`);
     if(b===BUILD.PORT){
       if(t.type!==TILE.WATER) errs.push(`Port at ${r},${c} not on Water`);
       else if(!neighbors(g,r,c).some(n=>n.type!==TILE.WATER && n.type!==TILE.FOG)) errs.push(`Port at ${r},${c} has no adjacent land`);
@@ -307,30 +321,71 @@ function cloneGrid(g){
     const row=[];
     for(let c=0;c<g.cols;c++){
       const t=g.tiles[r][c];
-      row.push({r:t.r,c:t.c,type:t.type,building:t.building,chopped:!!t.chopped,cityId:t.cityId||0,manualCity:t.manualCity||null});
+      row.push({r:t.r,c:t.c,type:t.type,building:t.building,chopped:!!t.chopped,grown:!!t.grown,burned:!!t.burned,cityId:t.cityId||0,manualCity:t.manualCity||null});
     }
     ng.tiles.push(row);
   }
   return ng;
 }
-// Optimizer config: which supplier types / chopping are allowed.
-const optConfig = { windmill:true, forge:true, sawmill:true, chop:true };
+// Optimizer config: which supplier types / techs are allowed.
+//   spiritualism: Grow Forest (Field → Forest, lets Lumber Huts/Forges go on
+//                 freshly grown forests). Per current rules, only empty Field
+//                 in city territory can be grown.
+//   construction: Burn Forest (Forest → Crop, lets Farms go on the result).
+//   Both checked: Field → Forest → Crop chain → Farm.
+const optConfig = { windmill:true, forge:true, sawmill:true, chop:true,
+                    spiritualism:false, construction:false };
 
-// Moves the hill-climb may try at a given tile. For forests we also consider
-// chopping (converting to an empty field, which frees the tile for any role).
+// Moves the hill-climb may try at a given tile. Each move is a {chopped, grown,
+// burned, building} tuple; applyMove overwrites all four fields. movesFor uses
+// the tile's *original* type (t.type) to decide which transformations are legal.
 function movesFor(t){
   const suppliers = [];
   if (optConfig.windmill) suppliers.push(BUILD.WINDMILL);
   if (optConfig.forge)    suppliers.push(BUILD.FORGE);
   if (optConfig.sawmill)  suppliers.push(BUILD.SAWMILL);
   const fieldRoles = [BUILD.NONE, ...suppliers, BUILD.MARKET];
+  const moves = [];
+
+  // Helpers — each pushes a move with the right flags for the target effType.
+  const pushField  = b => moves.push({chopped:false, grown:false, burned:false, building:b});
+  const pushForest = b => moves.push({chopped:false, grown:false, burned:false, building:b});
+  const pushChop   = b => moves.push({chopped:true,  grown:false, burned:false, building:b});
+  const pushGrow   = b => moves.push({chopped:false, grown:true,  burned:false, building:b});
+  const pushBurn   = b => moves.push({chopped:false, grown:false, burned:true,  building:b}); // forest → crop
+  const pushGrowBurn = b => moves.push({chopped:false, grown:true, burned:true, building:b}); // field → forest → crop
 
   if (t.type === TILE.FOREST) {
-    const moves = [{chopped:false, building:BUILD.LUMBERHUT}];
-    if (optConfig.chop) for (const b of fieldRoles) moves.push({chopped:true, building:b});
+    // Native forest: lumberhut or forge in place.
+    pushForest(BUILD.LUMBERHUT);
+    if (optConfig.forge) pushForest(BUILD.FORGE);
+    // Chop → field, anything that fits a field.
+    if (optConfig.chop) for (const b of fieldRoles) pushChop(b);
+    // Burn → crop, farm (or no building).
+    if (optConfig.construction) {
+      pushBurn(BUILD.NONE);
+      pushBurn(BUILD.FARM);
+    }
     return moves;
   }
-  return fieldRoles.map(b => ({chopped:false, building:b}));
+  if (t.type === TILE.FIELD) {
+    // In place.
+    for (const b of fieldRoles) pushField(b);
+    // Grow → forest.
+    if (optConfig.spiritualism) {
+      pushGrow(BUILD.NONE);
+      pushGrow(BUILD.LUMBERHUT);
+      if (optConfig.forge) pushGrow(BUILD.FORGE);
+      // Grow then burn → crop.
+      if (optConfig.construction) {
+        pushGrowBurn(BUILD.NONE);
+        pushGrowBurn(BUILD.FARM);
+      }
+    }
+    return moves;
+  }
+  // Other types (crop/ore/water/...) aren't in the optimizer's pool.
+  return [{chopped:false, grown:false, burned:false, building:t.building}];
 }
 
 // Assign a cityId to every tile. City-typed tiles get unique ids; every other
@@ -391,7 +446,12 @@ function maxMarketsPerCity(g){
 function objectiveScore(g){
   return totalStarsPerTurn(g) - 10000 * totalExcessPerCity(g);
 }
-function applyMove(t,m){ t.chopped=m.chopped; t.building=m.building; }
+function applyMove(t,m){
+  t.chopped = !!m.chopped;
+  t.grown   = !!m.grown;
+  t.burned  = !!m.burned;
+  t.building = m.building;
+}
 function hillClimb(g){
   // Pool = every tile the optimizer might reassign.
   const pool=[];
@@ -402,45 +462,47 @@ function hillClimb(g){
   let improved=true, best=objectiveScore(g), iter=0;
   while(improved && iter<400){
     improved=false; iter++;
+    // Total transformations on a move (chop/grow/burn). Used to tie-break in
+    // favor of leaving the user's painted terrain alone when stars are equal.
+    const xform = m => (m.chopped?1:0) + (m.grown?1:0) + (m.burned?1:0);
     for(const t of pool){
-      const origB=t.building, origC=!!t.chopped;
-      let bestM={chopped:origC, building:origB}, bestScore=best;
+      const orig = {chopped:!!t.chopped, grown:!!t.grown, burned:!!t.burned, building:t.building};
+      let bestM = orig, bestScore = best;
       for(const m of movesFor(t)){
         applyMove(t,m);
         const s=objectiveScore(g);
-        // Priority: (1) don't chop unnecessarily, (2) within same chop state,
-        // prefer empty to a wasted supplier placement.
+        // Tie-break priority (high → low):
+        //   1. Fewer terrain transformations (don't chop/grow/burn unnecessarily).
+        //   2. Within the same transformation count, prefer no building over an idle one.
         let tieBetter = false;
         if(s===bestScore){
-          if(bestM.chopped && !m.chopped) tieBetter = true;
-          else if(!!m.chopped === !!bestM.chopped &&
+          if(xform(m) < xform(bestM)) tieBetter = true;
+          else if(xform(m) === xform(bestM) &&
                   m.building===BUILD.NONE && bestM.building!==BUILD.NONE) tieBetter = true;
         }
         if(s>bestScore || tieBetter){ bestScore=s; bestM=m; }
       }
       applyMove(t,bestM);
-      if(bestM.building!==origB || bestM.chopped!==origC) improved=true;
+      if(bestM.building!==orig.building || bestM.chopped!==orig.chopped ||
+         bestM.grown!==orig.grown || bestM.burned!==orig.burned) improved=true;
       best=bestScore;
     }
     // Pair-swap pass: exchanges roles between two pool tiles if the swap
     // strictly improves the objective. Helps escape local optima where two
     // buildings block each other's ideal slots.
+    const snap = t => ({building:t.building, chopped:!!t.chopped, grown:!!t.grown, burned:!!t.burned});
+    const eq   = (m1,m2) => m1.building===m2.building && !!m1.chopped===!!m2.chopped &&
+                            !!m1.grown===!!m2.grown && !!m1.burned===!!m2.burned;
     for(let i=0;i<pool.length;i++){
       for(let j=i+1;j<pool.length;j++){
         const a=pool[i], b=pool[j];
-        const aB=a.building, aC=!!a.chopped, bB=b.building, bC=!!b.chopped;
+        const aS=snap(a), bS=snap(b);
         const aMoves=movesFor(a), bMoves=movesFor(b);
-        const aCan=aMoves.some(m=>m.building===bB && m.chopped===bC);
-        const bCan=bMoves.some(m=>m.building===aB && m.chopped===aC);
-        if(!aCan||!bCan) continue;
-        applyMove(a,{building:bB,chopped:bC});
-        applyMove(b,{building:aB,chopped:aC});
+        if(!aMoves.some(m=>eq(m,bS)) || !bMoves.some(m=>eq(m,aS))) continue;
+        applyMove(a,bS); applyMove(b,aS);
         const s=objectiveScore(g);
         if(s>best){ best=s; improved=true; }
-        else {
-          applyMove(a,{building:aB,chopped:aC});
-          applyMove(b,{building:bB,chopped:bC});
-        }
+        else { applyMove(a,aS); applyMove(b,bS); }
       }
     }
   }
@@ -448,11 +510,17 @@ function hillClimb(g){
 }
 function optimize(gIn){
   const g=cloneGrid(gIn);
-  // Reset any prior supplier/market/chop decisions; keep user-painted terrain.
+  // Reset any prior optimizer transformations and supplier/market placements;
+  // keep user-painted terrain. Flags (chop/grow/burn) and any building placed
+  // by a previous optimize run are wiped so we always re-plan from scratch.
   for(let r=0;r<g.rows;r++) for(let c=0;c<g.cols;c++){
     const t=g.tiles[r][c];
+    if(t.chopped || t.grown || t.burned){
+      t.chopped = t.grown = t.burned = false;
+      t.building = null;
+    }
     if([BUILD.WINDMILL,BUILD.FORGE,BUILD.SAWMILL,BUILD.MARKET].includes(t.building)) t.building=null;
-    if(t.type===TILE.FOREST){ t.chopped=false; t.building=null; }
+    if(t.type===TILE.FOREST){ t.building=null; } // forest auto-fills as Lumber Hut in prefill
   }
   assignCities(g);
   // Strip any remaining buildings outside a city's territory — you can't build there.
@@ -526,9 +594,27 @@ function optimize(gIn){
     }
     const s3=hillClimb(g3); if(s3>bestScore){bestScore=s3;bestGrid=g3;}
   }
+  // Strip resource buildings that don't feed any supplier — they don't
+  // contribute to market stars/turn and clutter the result. (A Lumber Hut
+  // with no adjacent Sawmill is wasted; same for Farm/Windmill, Mine/Forge.)
+  pruneOrphanResources(bestGrid);
   return {grid:bestGrid, stars:bestScore};
 }
-const P = { TILE, BUILD, makeGrid, neighbors, validateBoard,
+function pruneOrphanResources(g){
+  const FEEDS = { farm:BUILD.WINDMILL, mine:BUILD.FORGE, lumberhut:BUILD.SAWMILL };
+  for(let r=0;r<g.rows;r++) for(let c=0;c<g.cols;c++){
+    const t=g.tiles[r][c];
+    const sup=FEEDS[t.building]; if(!sup) continue;
+    if(neighbors(g,r,c).some(n=>n.building===sup)) continue;
+    // No matching supplier adjacent → resource isn't contributing. Drop it,
+    // and undo any optimizer transformation (grow/burn) that put it there so
+    // the tile reverts to its user-painted state.
+    t.building = null;
+    t.grown = false;
+    t.burned = false;
+  }
+}
+const P = { TILE, BUILD, makeGrid, neighbors, validateBoard, effType,
   supplierLevel, marketStars, totalStarsPerTurn, prefillResources, optimize, cloneGrid };
 
 // ---- State (isometric grid: tiles render as diamonds)
@@ -737,6 +823,8 @@ function draw() {
     if (!t.cityId && t.type !== P.TILE.CITY) {
       if (t.building) t.building = null;
       if (t.chopped)  t.chopped = false;
+      if (t.grown)    t.grown = false;
+      if (t.burned)   t.burned = false;
     }
   }
 
@@ -747,7 +835,10 @@ function draw() {
       if (c < 0 || c >= grid.cols) continue;
       const t = grid.tiles[r][c];
       const { x: cx, y: cy } = tileCenter(r, c);
-      const p = PALETTE.find(p => p.key === t.type && !p.building) || PALETTE[0];
+      // Color tiles by their effective terrain so optimizer-grown forests and
+      // burned-to-crop tiles render with the right palette entry.
+      const visType = P.effType ? P.effType(t) : t.type;
+      const p = PALETTE.find(p => p.key === visType && !p.building) || PALETTE[0];
 
       // Diamond fill (translucent so screenshot shows through)
       diamondPath(ctx, cx, cy);
@@ -791,15 +882,46 @@ function draw() {
       }
 
 
-      // Chopped-forest indicator (only on chopped forests, respecting toggle)
-      if (t.chopped && t.type === 'forest' && showFlags.chopped) {
+      // Transformation indicators (chop / grow / burn). Single label so the user
+      // can see at a glance which optimizer transformations apply to the tile.
+      if (showFlags.chopped) {
         const sz = Math.min(tileW, tileH) * 0.22;
-        lctx.strokeStyle = '#ff6b6b';
-        lctx.lineWidth = 2;
-        lctx.beginPath();
-        lctx.moveTo(cx - sz, cy - sz); lctx.lineTo(cx + sz, cy + sz);
-        lctx.moveTo(cx + sz, cy - sz); lctx.lineTo(cx - sz, cy + sz);
-        lctx.stroke();
+        if (t.chopped && t.type === 'forest' && !t.burned) {
+          // Forest that the optimizer wants chopped to a field.
+          lctx.strokeStyle = '#ff6b6b';
+          lctx.lineWidth = 2;
+          lctx.beginPath();
+          lctx.moveTo(cx - sz, cy - sz); lctx.lineTo(cx + sz, cy + sz);
+          lctx.moveTo(cx + sz, cy - sz); lctx.lineTo(cx - sz, cy + sz);
+          lctx.stroke();
+        }
+        if (t.grown && t.type === 'field') {
+          // Field the optimizer wants grown into a forest (Spiritualism).
+          // Small green up-triangle.
+          lctx.fillStyle = '#7ed957';
+          lctx.strokeStyle = '#0a3';
+          lctx.lineWidth = 1;
+          lctx.beginPath();
+          lctx.moveTo(cx, cy - sz);
+          lctx.lineTo(cx + sz*0.85, cy + sz*0.5);
+          lctx.lineTo(cx - sz*0.85, cy + sz*0.5);
+          lctx.closePath();
+          lctx.fill(); lctx.stroke();
+        }
+        if (t.burned) {
+          // Forest the optimizer wants burned to a crop (Construction).
+          // Small orange flame-like diamond.
+          lctx.fillStyle = '#ff9a3c';
+          lctx.strokeStyle = '#a04500';
+          lctx.lineWidth = 1;
+          lctx.beginPath();
+          lctx.moveTo(cx, cy - sz);
+          lctx.lineTo(cx + sz*0.7, cy);
+          lctx.lineTo(cx, cy + sz);
+          lctx.lineTo(cx - sz*0.7, cy);
+          lctx.closePath();
+          lctx.fill(); lctx.stroke();
+        }
       }
 
       // Out-of-territory tiles: heavy darken + diagonal hatch so it's
@@ -1282,7 +1404,7 @@ overlay.addEventListener('click', e => {
   }
 
   // Normal paint
-  if (e.shiftKey) { t.type = P.TILE.FIELD; t.building = null; t.chopped = false; t.manualCity = null; }
+  if (e.shiftKey) { t.type = P.TILE.FIELD; t.building = null; t.chopped = false; t.grown = false; t.burned = false; t.manualCity = null; }
   else {
     const prevType = t.type;
     const pEntry = PALETTE.find(p => p.key === paintType);
@@ -1299,9 +1421,9 @@ overlay.addEventListener('click', e => {
         flashStatus(`Can't place ${pEntry.label} on ${t.type === P.TILE.ORE ? 'Ore/Mine' : 'Mountain'} tiles.`);
         return;
       }
-      t.type = pEntry.terrain; t.building = pEntry.building; t.chopped = false;
+      t.type = pEntry.terrain; t.building = pEntry.building; t.chopped = false; t.grown = false; t.burned = false;
     } else {
-      t.type = paintType; t.building = null; t.chopped = false;
+      t.type = paintType; t.building = null; t.chopped = false; t.grown = false; t.burned = false;
     }
     // When placing a City, auto-assign its full 5×5 (24 surrounding tiles) via
     // manualCity. First-come-first-served: don't steal tiles already assigned
@@ -1547,6 +1669,13 @@ document.getElementById('clearAssign').onclick = () => {
   for (let r=0; r<grid.rows; r++) for (let c=0; c<grid.cols; c++) {
     const t = grid.tiles[r][c];
     if (['windmill','forge','sawmill','market'].includes(t.building)) t.building = null;
+    // Wipe optimizer-driven terrain transformations so the user sees their
+    // painted tiles again. Resource buildings (farm/mine/lumberhut) on those
+    // transformed tiles came from the optimizer and go with them.
+    if (t.grown || t.burned || t.chopped) {
+      t.chopped = false; t.grown = false; t.burned = false;
+      t.building = null;
+    }
   }
   draw();
 };
