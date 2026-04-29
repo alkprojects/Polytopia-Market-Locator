@@ -1600,6 +1600,9 @@ document.getElementById('loadExample').onclick = () => {
   bgImg.src = 'example-board.png?' + Date.now(); // bust cache
   document.getElementById('fileName').textContent = 'example-board.png';
   document.getElementById('file').value = '';
+  // Lock the grid so the user doesn't accidentally drag it out of alignment
+  // while exploring the example.
+  document.getElementById('lockGrid').checked = true;
 };
 
 function readNum(id) { return parseInt(document.getElementById(id).value, 10); }
