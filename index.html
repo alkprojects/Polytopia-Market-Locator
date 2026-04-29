@@ -86,6 +86,18 @@
     </div>
     <button class="action" id="addEmptyGrid" style="margin-top:6px; width:100%; background:#aaa; color:#222">Add grid manually</button>
     <h2 style="margin-top:10px">Fine tune grid</h2>
+    <details style="margin-top:4px">
+      <summary class="legend" style="cursor:pointer">How to use anchors</summary>
+      <div class="legend" style="margin-top:6px; line-height:1.4">
+        Anchors lock points on the grid so resizing pivots around them instead of the corner.
+        <br/><br/>
+        <b>1.</b> Click <b>Set anchor 1</b>, then click a tile <i>vertex</i> (corner) on the canvas — pick a landmark you can re-find on the screenshot, like a city corner near the top-left of your map. Now changing Tile&nbsp;W / Tile&nbsp;H pivots around this point so it stays put.
+        <br/><br/>
+        <b>2.</b> Click <b>Set anchor 2</b> and pick a vertex far from anchor 1 (e.g. opposite corner of the map). Then <b>click + drag</b> near anchor 2 to scale the whole grid: anchor 1 stays fixed, the W/H ratio is preserved, and anchor 2 follows your cursor — the fastest way to match the screenshot's scale.
+        <br/><br/>
+        Use <b>Remove</b> to clear an anchor when you're done.
+      </div>
+    </details>
     <div style="display:flex; gap:6px; margin-top:4px">
       <button class="secondary" id="setAnchor" style="flex:1; font-size:11px">Set anchor 1</button>
       <button class="secondary" id="clearAnchor" style="font-size:11px; display:none">Remove</button>
