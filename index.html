@@ -106,7 +106,22 @@
   </div>
   <a href="https://github.com/alkprojects/Polytopia-Market-Locator/issues/new/choose" target="_blank" rel="noopener" class="legend" style="margin-left:auto; font-size:12px; color:var(--muted); text-decoration:none; border:1px solid #444; padding:4px 8px; border-radius:4px" title="Report a bug or suggest a feature on GitHub">🐛 Report bug / suggest feature</a>
 </header>
-<div id="loading"><div class="spinbox"><div class="spinner"></div><div class="txt">Finding optimal markets…</div></div></div>
+<div id="loading">
+  <div class="spinbox" style="flex-direction:column; align-items:stretch; min-width:340px; gap:0">
+    <div style="display:flex; align-items:center; gap:14px">
+      <div class="spinner"></div>
+      <div class="txt">Finding optimal markets…</div>
+    </div>
+    <div style="margin-top:14px; background:#1b1d24; height:10px; border-radius:5px; overflow:hidden">
+      <div id="loadingBar" style="width:0%; height:100%; background:var(--accent); transition:width 120ms linear"></div>
+    </div>
+    <div style="display:flex; justify-content:space-between; margin-top:8px; font-size:12px; color:var(--muted); gap:10px">
+      <span id="loadingPhase">Initializing…</span>
+      <span id="loadingTimer">0.0s</span>
+    </div>
+    <button class="secondary" id="loadingCancel" style="margin-top:12px; align-self:flex-end; font-size:12px">Cancel</button>
+  </div>
+</div>
 <main>
   <aside>
     <h2>Grid</h2>
@@ -551,7 +566,27 @@ function hillClimb(g){
     const t=g.tiles[r][c];
     if((t.type===TILE.FIELD || t.type===TILE.FOREST || t.type===TILE.OTHER) && t.cityId) pool.push(t);
   }
-  let improved=true, best=objectiveScore(g), iter=0;
+  // Localized scoring: iterate only the pool (in-territory candidate tiles)
+  // instead of the full grid. Markets and supplier buildings can only live on
+  // FIELD/FOREST/OTHER tiles inside a city, so this is exact — and it's
+  // ~200× faster on a 60×60 grid where the pool is ~20 tiles. Called many
+  // thousands of times per hillClimb invocation, so this dominates runtime.
+  function score(){
+    let stars = 0;
+    const counts = {}; // key: cityId+'|'+building
+    for(const t of pool){
+      const b = t.building;
+      if (b === BUILD.MARKET) stars += marketStars(g, t.r, t.c);
+      if (b && UNIQUE_PER_CITY.includes(b) && t.cityId){
+        const k = t.cityId + '|' + b;
+        counts[k] = (counts[k] || 0) + 1;
+      }
+    }
+    let excess = 0;
+    for(const k in counts) if(counts[k]>1) excess += counts[k]-1;
+    return stars - 10000 * excess;
+  }
+  let improved=true, best=score(), iter=0;
   while(improved && iter<400){
     improved=false; iter++;
     // Total transformations on a move (chop/grow/burn/destroy). Used to tie-break
@@ -562,7 +597,7 @@ function hillClimb(g){
       let bestM = orig, bestScore = best;
       for(const m of movesFor(t)){
         applyMove(t,m);
-        const s=objectiveScore(g);
+        const s=score();
         // Tie-break priority (high → low):
         //   1. If the user painted a building here, prefer keeping it — only
         //      destroy it when stars strictly improve. This stops the optimizer
@@ -593,14 +628,22 @@ function hillClimb(g){
     const eq   = (m1,m2) => m1.building===m2.building && !!m1.chopped===!!m2.chopped &&
                             !!m1.grown===!!m2.grown && !!m1.burned===!!m2.burned &&
                             !!m1.destroyed===!!m2.destroyed;
+    // Pair-swap distance prune: a tile's role only affects markets/suppliers
+    // within Chebyshev radius 2 of it (market scores adjacent suppliers; each
+    // supplier scores its adjacent feeds). So two changes interact only when
+    // their influence zones overlap, i.e., Chebyshev distance ≤ 4. Beyond
+    // that, a swap is mathematically equivalent to two independent single-tile
+    // moves which the loop above already considered — no point retrying.
     for(let i=0;i<pool.length;i++){
+      const a=pool[i];
       for(let j=i+1;j<pool.length;j++){
-        const a=pool[i], b=pool[j];
+        const b=pool[j];
+        if(Math.max(Math.abs(a.r-b.r), Math.abs(a.c-b.c)) > 4) continue;
         const aS=snap(a), bS=snap(b);
         const aMoves=movesFor(a), bMoves=movesFor(b);
         if(!aMoves.some(m=>eq(m,bS)) || !bMoves.some(m=>eq(m,aS))) continue;
         applyMove(a,bS); applyMove(b,aS);
-        const s=objectiveScore(g);
+        const s=score();
         if(s>best){ best=s; improved=true; }
         else { applyMove(a,aS); applyMove(b,bS); }
       }
@@ -608,7 +651,11 @@ function hillClimb(g){
   }
   return totalStarsPerTurn(g);
 }
-function optimize(gIn){
+async function optimize(gIn, opts){
+  opts = opts || {};
+  const onProgress  = opts.onProgress  || (()=>{});
+  const isCancelled = opts.isCancelled || (()=>false);
+  const yieldUI = () => new Promise(r=>setTimeout(r,0));
   const g=cloneGrid(gIn);
   // Reset any prior optimizer transformations and supplier/market placements;
   // keep user-painted terrain. Flags (chop/grow/burn) and any building placed
@@ -641,10 +688,24 @@ function optimize(gIn){
   // overwrite them.
   const isLocked = (t) => t.userPlaced && t.building && !optConfig.destroy;
 
+  // Total trial count for progress reporting. We compute mkPool once up-front
+  // so the progress bar has an accurate denominator.
+  const mkPool = buildablePool(g).filter(t=>!isLocked(t));
+  const RANDOM_COUNT = 80;
+  const TOTAL_TRIALS = 2 + mkPool.length + RANDOM_COUNT;
+  let trialDone = 0;
+  const tick = async (label) => {
+    trialDone++;
+    onProgress(trialDone, TOTAL_TRIALS, label);
+    await yieldUI();
+  };
+
   // Seed 1: every buildable tile starts as a market. Skip user-locked tiles.
   const g1=cloneGrid(g);
   for(const t of buildablePool(g1)) if(!isLocked(t)) t.building=BUILD.MARKET;
   const s1=hillClimb(g1); if(s1>bestScore){bestScore=s1;bestGrid=g1;}
+  await tick('Seed: all-markets');
+  if(isCancelled()) return {grid:bestGrid, stars:bestScore, cancelled:true};
 
   // Seed 2: each tile takes the enabled supplier with the most neighboring resources.
   const g2=cloneGrid(g);
@@ -659,11 +720,14 @@ function optimize(gIn){
     t.building=bk||BUILD.MARKET;
   }
   const s2=hillClimb(g2); if(s2>bestScore){bestScore=s2;bestGrid=g2;}
+  await tick('Seed: best-supplier');
+  if(isCancelled()) return {grid:bestGrid, stars:bestScore, cancelled:true};
 
   // Seed 2b: for every candidate market position, build the best legal
   // 1-of-each supplier configuration *around* it, then hill climb.
-  const mkPool = buildablePool(g).filter(t=>!isLocked(t));
+  let mkIdx = 0;
   for(const mkTile of mkPool){
+    mkIdx++;
     const g2b = cloneGrid(g);
     const mk = g2b.tiles[mkTile.r][mkTile.c];
     mk.building = BUILD.MARKET;
@@ -686,6 +750,8 @@ function optimize(gIn){
     }
     const s2b=hillClimb(g2b);
     if(s2b>bestScore){ bestScore=s2b; bestGrid=g2b; }
+    await tick(`Market candidate ${mkIdx}/${mkPool.length}`);
+    if(isCancelled()) return {grid:bestGrid, stars:bestScore, cancelled:true};
   }
 
   // Seed 3: random restarts — sometimes escapes local optima the seeded starts hit.
@@ -699,7 +765,10 @@ function optimize(gIn){
   if(optConfig.windmill) RANDOM_ROLES.push(BUILD.WINDMILL);
   if(optConfig.forge)    RANDOM_ROLES.push(BUILD.FORGE);
   if(optConfig.sawmill)  RANDOM_ROLES.push(BUILD.SAWMILL);
-  for(let trial=0;trial<80;trial++){
+  let lastImproveTrial = -1;
+  const NO_IMPROVE_PATIENCE = 30; // stop early if 30 consecutive trials yield nothing
+  for(let trial=0;trial<RANDOM_COUNT;trial++){
+    if(isCancelled()) return {grid:bestGrid, stars:bestScore, cancelled:true};
     const g3=cloneGrid(g);
     // Random terrain transforms inside city territory only — skip user-locked
     // tiles (those movesFor refuses to change anyway, and bulldozing them here
@@ -726,7 +795,16 @@ function optimize(gIn){
     // Seed random roles on every buildable tile (post-transform). Skip locked.
     for(const t of buildablePool(g3))
       if(!isLocked(t)) t.building=RANDOM_ROLES[Math.floor(Math.random()*RANDOM_ROLES.length)];
-    const s3=hillClimb(g3); if(s3>bestScore){bestScore=s3;bestGrid=g3;}
+    const s3=hillClimb(g3);
+    if(s3>bestScore){ bestScore=s3; bestGrid=g3; lastImproveTrial=trial; }
+    await tick(`Random restart ${trial+1}/${RANDOM_COUNT}`);
+    // Early-stop: if no improvement for the last NO_IMPROVE_PATIENCE trials,
+    // remaining randoms are unlikely to help. Skip them but still mark progress
+    // as complete so the bar fills cleanly.
+    if(trial - lastImproveTrial >= NO_IMPROVE_PATIENCE){
+      while(trialDone < TOTAL_TRIALS) await tick(`Converged early at trial ${trial+1}`);
+      break;
+    }
   }
   // Strip resource buildings that don't feed any supplier — they don't
   // contribute to market stars/turn and clutter the result. (A Lumber Hut
@@ -1878,7 +1956,7 @@ document.getElementById('removeGrid').onclick = () => {
   });
 });
 
-document.getElementById('runOpt').onclick = () => {
+document.getElementById('runOpt').onclick = async () => {
   // Warn if the grid has no resource tiles — optimizer will correctly do nothing.
   let hasResource = false;
   for (let r=0; r<grid.rows && !hasResource; r++)
@@ -1892,19 +1970,48 @@ document.getElementById('runOpt').onclick = () => {
         + 'then press "Find optimal markets".');
     return;
   }
-  const loading = document.getElementById('loading');
+  const loading    = document.getElementById('loading');
+  const bar        = document.getElementById('loadingBar');
+  const phaseEl    = document.getElementById('loadingPhase');
+  const timerEl    = document.getElementById('loadingTimer');
+  const cancelBtn  = document.getElementById('loadingCancel');
+  let cancelled = false;
+  cancelBtn.onclick = () => { cancelled = true; };
+  bar.style.width = '0%';
+  phaseEl.textContent = 'Initializing…';
+  timerEl.textContent = '0.0s';
   loading.classList.add('on');
-  // Yield to the browser so the overlay actually paints before the synchronous
-  // optimizer blocks the main thread.
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    try {
-      const { grid: ng, stars } = P.optimize(grid);
+  const t0 = performance.now();
+  // Tick a wall-clock display + ETA every 200ms while running.
+  let pct = 0;
+  const timerInt = setInterval(() => {
+    const elapsed = (performance.now() - t0) / 1000;
+    let line = elapsed.toFixed(1) + 's';
+    if (pct > 0.02) {
+      const total = elapsed / pct;
+      const eta = Math.max(0, total - elapsed);
+      line += ' · ~' + eta.toFixed(0) + 's left';
+    }
+    timerEl.textContent = line;
+  }, 200);
+  try {
+    const { grid: ng } = await P.optimize(grid, {
+      onProgress: (done, total, label) => {
+        pct = done / total;
+        bar.style.width = (pct * 100).toFixed(1) + '%';
+        phaseEl.textContent = label + ' (' + done + '/' + total + ')';
+      },
+      isCancelled: () => cancelled,
+    });
+    if (!cancelled) {
       grid = ng;
       draw();
-    } finally {
-      loading.classList.remove('on');
     }
-  }));
+  } finally {
+    clearInterval(timerInt);
+    loading.classList.remove('on');
+    cancelBtn.onclick = null;
+  }
 };
 document.getElementById('clearAll').onclick = () => {
   if (!confirm('Wipe the entire grid? All terrain, buildings, and territory will be reset.')) return;
